@@ -1,0 +1,109 @@
+# Development and builds
+
+## Current scope
+
+Version 0.2.1 includes the Android streaming implementation and a fix for lost encoder-format events during startup. Scenes from the shared C# model are composed on the GPU on Android, encoded with the phone's hardware H.264/HEVC encoder and AAC, and published over SRT (MPEG-TS) or RTMP/RTMPS (FLV, enhanced RTMP for HEVC). Sources: cameras (Camera2, including constrained high-speed sessions), the device screen (MediaProjection), incoming RTMP/SRT streams (pulled or received by listening on the phone), images, text and colors. Microphone, device audio (playback capture) and network-source audio are mixed. See the validation section for tested paths and remaining device checks.
+
+iOS shares the model and editor UI but has no capture/streaming engine yet; it builds only on macOS and has not been built here. There is no ReplayKit extension.
+
+## Architecture
+
+| Path | Responsibility |
+|---|---|
+| `src/DeveLiveStreamer.Core` | Versioned scene collection, reusable sources, per-scene placement, output settings, edit history, atomic storage |
+| `src/DeveLiveStreamer.Streaming` | Platform-independent media plumbing: H.264/HEVC/AAC parameter handling, MPEG-TS mux/demux, FLV/AMF0, RTMP client and ingest server, libsrt P/Invoke, reconnecting `LivePublisher`, `IncomingStream` (RTMP/SRT pull or listen), PCM `AudioMixer` |
+| `src/DeveLiveStreamer.App/Studio` | Engine contract (`IStudioEngine`), immutable `RenderScene` snapshots, layer geometry (crop/fit, mirroring, camera rotation) |
+| `src/DeveLiveStreamer.App/Platforms/Android/Studio` | Android engine: EGL/GLES compositor thread, camera/screen/network sources, MediaCodec encoders and decoders, audio capture, foreground service, preview `TextureView` |
+| `tests/DeveLiveStreamer.Core.Tests` | Scene model, storage and layer-geometry tests |
+| `tests/DeveLiveStreamer.Streaming.Tests` | Format round trips plus SRT/RTMP interoperability with FFmpeg |
+
+The UI hands the engine a `RenderScene` snapshot after every edit (including each drag step). The compositor thread renders the visible layers bottom-to-top into an output-sized framebuffer on its own clock at the output frame rate; that frame is drawn into the encoder's input surface with its presentation time and blitted, letterboxed, into the preview. The display refresh never paces the output (the preview swap interval is 0). When nothing is encoding, the framebuffer is sized to the preview to save power.
+
+Camera frames arrive through `SurfaceTexture`, whose transform already rotates the sensor image to the device's natural orientation; the compositor only compensates the display rotation and center-crops into the layer (`LayerGeometry`). Sources are opened on demand for the program scene and released shortly after they leave it. One `CameraSource` exists per camera device, shared by every layer that uses it.
+
+Encoded frames go to `LivePublisher`, which connects once the encoder's parameter sets are known, starts every connection at a key frame, drops video back to the next key frame (and requests one) if frames wait longer than two seconds, and reconnects with back-off. For DeveStreamingPlatform the SRT URL's `streamid` (e.g. `default/app/name`) is passed unchanged to OvenMediaEngine; other query options do not leak into it. SRT latency is set in milliseconds from the settings, and zero is allowed.
+
+### Native SRT library
+
+Android uses `libsrtdroid.so` from the published `srtdroid-core` 1.10.1 AAR (libsrt 1.5.7 statically linked with OpenSSL 3.5.1), whose exported `srt_*` C API is called directly through P/Invoke. An MSBuild target downloads the AAR into `.tools/native/`, verifies its SHA-256 and extracts the ARM64/x86-64 libraries. Desktop tests use the system libsrt 1.5 (`libsrt-gnutls.so.1.5` on Debian/Ubuntu).
+
+## Toolchain
+
+The checked-in SDK selector uses .NET **10.0.402** with patch-only roll-forward. This runner installed the SDK, the `maui-android` workload from its manifests, Microsoft JDK **21.0.8**, Android platform **36** and build tools **36.0.0**. MAUI packages are explicitly pinned to **10.0.120**; NuGet lock files are included for the app and tests. The dependency-free core library does not generate a lock file, so desktop tests and Android runtime restore do not overwrite the same lock graph. Update these as a tested set.
+
+`eng/setup-android.sh` bootstraps Linux x86-64 and generates an ignored `.tools/env.sh`. Pass a tool directory explicitly to place downloads and workloads on a suitable volume. The current runner uses `/tmp/deve-live-streamer-tools`; those tools must be recreated if that temporary volume is cleared. The source and build scripts do not depend on retaining it.
+
+When using a preinstalled environment:
+
+```bash
+export DOTNET_ROOT=/path/to/dotnet
+export JAVA_HOME=/path/to/jdk-21
+export ANDROID_HOME=/path/to/android-sdk
+export PATH="$DOTNET_ROOT:$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+dotnet workload install maui-android --skip-manifest-update
+./eng/build-android.sh
+```
+
+For the configured runner:
+
+```bash
+source .tools/env.sh
+dotnet test tests/DeveLiveStreamer.Core.Tests -c Release
+./eng/build-android.sh
+adb install -r artifacts/android/DeveLiveStreamer-0.2.1-development.apk
+```
+
+The app minimum is Android API 29. The universal APK includes `arm64-v8a` and `x86_64`; 32-bit ARM is not packaged in this first build. Camera access is requested when a scene uses a camera; microphone, notification and screen-capture consent when going live. Image selection uses the system picker.
+
+## Android layout compatibility
+
+The pinned MAUI version's batched view initialization converts unset (`NaN`) minimum dimensions directly to native integers. On this Android runtime that produced `2147483647` pixel minimums and an unusable layout. `AndroidLayoutCompatibility` runs MAUI's normal minimum-width/height mapping after the batch, resolving unset values to zero while preserving explicit minimums. Keep this guard until a framework update is validated without it. It affects UI measurement only.
+
+Upstream implementation: [batched handler initialization](https://github.com/dotnet/maui/blob/10.0.120/src/Core/src/Handlers/View/ViewHandler.cs), [native view initialization and minimum mapping](https://github.com/dotnet/maui/blob/10.0.120/src/Core/src/Platform/Android/ViewExtensions.cs).
+
+## Signing and release behavior
+
+Without release secrets, the build script generates/reuses `.tools/development.keystore`. This is a development signing identity with the standard development password; the private file is ignored and must not be committed. Subsequent local builds reuse it so the APK can update an existing local installation.
+
+For release signing, set these through the build environment or GitHub repository secrets:
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+The keystore is decoded to a temporary file and removed when packaging exits. Store/key passwords are supplied through MSBuild environment references. The published APK is checked against the selected signing certificate. An install already signed with a different development/release identity cannot be updated in place; export the scene collection before changing signing channels.
+
+The workflow uploads APK/checksum/verification metadata on successful builds, plus test results. Its release job runs only for master pushes that used release signing. Pull-request builds use a development key. Each fresh CI runner creates its own development identity unless an explicit persistent signing policy is configured; CI development APKs are therefore not guaranteed to update one another in place. These workflow files were added locally; no push or remote Actions run has been performed during this implementation.
+
+## Saved data
+
+The app stores `scene-collection.json` in its private application-data directory. A save validates the document, writes a temporary file and replaces the current file. The previous valid save is retained as `.bak`; recovery avoids replacing that backup with an invalid latest file. Unknown document versions or invalid source references are rejected. JSON serialization uses generated metadata so it survives Release trimming.
+
+Images are copied into the app's private `images/` directory. JSON export includes source configuration and local image paths, not image bytes. Export/import is useful for inspection and same-device backup; moving a collection to a different device requires re-adding its image assets. Server URLs in exported settings are part of the JSON, so export only configuration you intend to share.
+
+## Validation
+
+`eng/build-android.sh` runs both test projects before packaging (51 regular tests plus an opt-in server test; 52 cases reported by the test runner):
+
+- **Core (25):** scene references, layer order, history, storage recovery, uncapped output settings, codec-imposed constraints (even 4:2:0 sizes, AAC sample rates) and the layer geometry used by the compositor: center-crop, letterbox, mirroring, all four display rotations and the GL matrix layout.
+- **Streaming (27):** NAL/AVC/HEVC/AAC/AMF0 round trips, MPEG-TS and FLV round trips, DeveStreamingPlatform URL parsing (OME `streamid` routes, encoded IDs, IPv6, passphrases), the mixer, publisher reconnection/key-frame/video-only behavior, and interoperability with FFmpeg 7.1 over loopback:
+  - our MPEG-TS (H.264 and HEVC) decodes in FFmpeg without errors;
+  - our SRT publisher delivers every frame to an FFmpeg SRT listener, for H.264 and HEVC;
+  - our RTMP publisher delivers H.264 and enhanced-RTMP HEVC to an FFmpeg RTMP server;
+  - FFmpeg can push RTMP and SRT into the app's ingest sources, a wrong RTMP key is rejected, and RTMP pull works;
+  - the SRT listener sees the publisher's stream ID.
+
+The opt-in `PublishesInRealTimeToAConfiguredServer` test takes `DLS_PUBLISH_URL` and optional `DLS_PUBLISH_SECONDS`. A recorded desktop run against DSP sent 600 H.264 frames in 20 seconds with no reported drops or reconnects. That verifies transport from the desktop, not Android capture or DSP playback.
+
+Version 0.2.1 corrects an Android startup race: the encoders previously began delivering output from their constructors, before the publisher subscribed to format events. A video format emitted during audio initialization could be lost permanently, leaving the publisher waiting at “Starting encoders…” even while the codec returned frames. Output workers now start explicitly after all consumers subscribe; codec initialization runs off the UI thread. Stream details include input/output counters for both encoders. Encoder tuning fallback and timestamp rebasing are additional recovery measures, not established explanations for a particular phone's failure.
+
+A 0.2.1 emulator run with a 320×180, 15 fps color/text scene delivered both format events to the publisher. Initial connection attempts failed because the emulator was disconnected from Wi-Fi. After a clean restart, `adb shell cmd wifi connect-network AndroidWifi open` restored connectivity; check `adb shell cmd wifi status` and ping the host before testing publishing.
+
+With connectivity established, FFmpeg received the Android app's SRT stream and recorded 59 H.264 video frames plus 63 AAC frames. The recording decodes with `ffmpeg -v error -xerror -i android-capture.ts -f null -` without errors, and an extracted frame shows the composed text and color layers in the correct orientation. Artifacts are retained locally under `artifacts/validation-0.2.1/local/`. The receiver deliberately stops after 12 seconds, after which the app reports a send error and reconnects. The recording has frame/audio gaps under software emulation; this is a functional transport check, not a frame-rate or audio-continuity benchmark. Its small output size is a validation fixture, not an application limit.
+
+A subsequent direct Android-to-DSP run used a lighter 320×180, 5 fps scene with 16 kHz mono AAC to keep the software emulator responsive. The app stayed Live for more than 55 seconds, reporting nonzero bitrate and roughly 3–5 ms SRT RTT. A packet capture over approximately 55 seconds recorded 1,204 outgoing SRT data packets containing 3,498 MPEG-TS packets (including both video PID `0x100` and audio PID `0x101`) and 1,069 acknowledgements from DSP. This confirms Android transmission and acknowledgement by DSP; it does not verify player playback. The capture summary is retained under `artifacts/validation-0.2.1/dsp-wire-summary.json`.
+
+On the local Android 11 x86-64 emulator (software CPU, GPU and codecs, no KVM), the APK installs and starts; the compositor renders the preview, permissions and screen-capture consent work, and the foreground service and MediaProjection start. The software AAC encoder hit Codec2 watchdog failures in earlier runs; the app can recreate it and fall back to video-only if no audio format arrives. **DSP player playback and physical-phone behavior still need confirmation**, including camera orientation, concurrent cameras, high-speed modes, device-audio capture and sustained high-resolution/high-frame-rate output. The emulator's Android framework also became unresponsive and restarted during heavier tests; these runs are not a stability or performance sign-off.
+
+The APK verifier checks ZIP integrity, application ID and minimum API, ARM64/x86-64 contents including `libsrtdroid.so`, 16 KB ELF alignment, the signing certificate and the checksum.

@@ -1,0 +1,16 @@
+Third-party assets
+
+Open Sans Regular and Semibold
+Digitized data copyright © 2010–2011, Google Corporation.
+Licensed under the Apache License, Version 2.0.
+Full license: Apache-2.0.txt (also docs/licenses/Apache-2.0.txt in the repository).
+
+.NET MAUI, .NET for Android and their package dependencies retain their upstream licenses.
+The resolved package versions and dependency graph are recorded in packages.lock.json.
+
+SRT library for Android (libsrtdroid.so from srtdroid-core 1.10.1)
+Downloaded at build time from Maven Central, pinned by version and SHA-256.
+- srtdroid: copyright Thibault B. and contributors, Apache License 2.0 (docs/licenses/Apache-2.0.txt).
+- Secure Reliable Transport (libsrt) 1.5.7: copyright Haivision Systems Inc., Mozilla Public License 2.0.
+  Source: https://github.com/Haivision/srt/tree/v1.5.7
+- OpenSSL 3.5.1 (statically linked): Apache License 2.0. Source: https://github.com/openssl/openssl/tree/openssl-3.5.1

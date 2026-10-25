@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net10.0-android</TargetFrameworks>
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx'))">net10.0-android;net10.0-ios</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>DeveLiveStreamer.App</RootNamespace>
+    <UseMaui>true</UseMaui>
+    <SingleProject>true</SingleProject>
+    <ApplicationTitle>DeveLiveStreamer</ApplicationTitle>
+    <ApplicationId>nl.deve.livestreamer</ApplicationId>
+    <ApplicationDisplayVersion>0.2.1</ApplicationDisplayVersion>
+    <ApplicationVersion>4</ApplicationVersion>
+    <SupportedOSPlatformVersion Condition="'$(TargetFramework)' == 'net10.0-android'">29.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="'$(TargetFramework)' == 'net10.0-ios'">15.0</SupportedOSPlatformVersion>
+    <AndroidPackageFormats>apk</AndroidPackageFormats>
+    <RuntimeIdentifiers Condition="'$(TargetFramework)' == 'net10.0-android'">android-arm64;android-x64</RuntimeIdentifiers>
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidUseSharedRuntime>false</AndroidUseSharedRuntime>
+  </PropertyGroup>
+  <ItemGroup>
+    <MauiIcon Include="Resources/AppIcon/appicon.png" BaseSize="256,256" Color="#10161D" />
+    <MauiSplashScreen Include="Resources/Splash/splash.svg" Color="#10161D" BaseSize="128,128" />
+    <MauiImage Include="Resources/Images/*" />
+    <MauiFont Include="Resources/Fonts/*" />
+    <MauiAsset Include="Resources/Raw/**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+    <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.120" />
+    <PackageReference Include="Microsoft.Maui.Essentials" Version="10.0.120" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+    <ProjectReference Include="../DeveLiveStreamer.Core/DeveLiveStreamer.Core.csproj" />
+    <ProjectReference Include="../DeveLiveStreamer.Streaming/DeveLiveStreamer.Streaming.csproj" />
+  </ItemGroup>
+
+  <!--
+    libsrt 1.5.7 (with OpenSSL) for Android comes from srtdroid's published AAR, whose JNI library also exports the
+    plain srt_* C API that DeveLiveStreamer.Streaming calls. The archive is pinned by version and SHA-256.
+  -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-android'">
+    <SrtDroidVersion>1.10.1</SrtDroidVersion>
+    <SrtDroidSha256>0C51B869724C14C2D02170AC2A28941E2483365E97DA0B4117AD6A0BDFE3D21B</SrtDroidSha256>
+    <SrtDroidDirectory>$(MSBuildProjectDirectory)/../../.tools/native/srtdroid-$(SrtDroidVersion)/</SrtDroidDirectory>
+  </PropertyGroup>
+  <Target Name="FetchSrtDroid" BeforeTargets="PrepareForBuild;_ResolveAndroidTooling" Condition="'$(TargetFramework)' == 'net10.0-android' And !Exists('$(SrtDroidDirectory)jni/arm64-v8a/libsrtdroid.so')">
+    <DownloadFile SourceUrl="https://repo1.maven.org/maven2/io/github/thibaultbee/srtdroid/srtdroid-core/$(SrtDroidVersion)/srtdroid-core-$(SrtDroidVersion).aar"
+                  DestinationFolder="$(SrtDroidDirectory)" DestinationFileName="srtdroid-core.aar" />
+    <VerifyFileHash File="$(SrtDroidDirectory)srtdroid-core.aar" Hash="$(SrtDroidSha256)" />
+    <Unzip SourceFiles="$(SrtDroidDirectory)srtdroid-core.aar" DestinationFolder="$(SrtDroidDirectory)" Include="jni/arm64-v8a/libsrtdroid.so;jni/x86_64/libsrtdroid.so" />
+  </Target>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-android'">
+    <AndroidNativeLibrary Include="$(SrtDroidDirectory)jni/arm64-v8a/libsrtdroid.so" Abi="arm64-v8a" />
+    <AndroidNativeLibrary Include="$(SrtDroidDirectory)jni/x86_64/libsrtdroid.so" Abi="x86_64" />
+  </ItemGroup>
+</Project>

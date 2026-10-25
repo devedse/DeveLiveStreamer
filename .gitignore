@@ -1,0 +1,14 @@
+# Local research, source checkouts, and downloaded reference material.
+/research/
+**/bin/
+**/obj/
+/artifacts/
+/.tools/
+/.vs/
+/.idea/
+*.user
+*.keystore
+*.jks
+keystore.properties
+__pycache__/
+*.pyc

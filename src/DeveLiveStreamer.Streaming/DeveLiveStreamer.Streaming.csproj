@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Package-free like Core: consumers restore it for desktop and Android RIDs. -->
+    <RestorePackagesWithLockFile>false</RestorePackagesWithLockFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DeveLiveStreamer.Streaming.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DeveLiveStreamer.App/DeveLiveStreamer.App.csproj" />
+    <Project Path="src/DeveLiveStreamer.Core/DeveLiveStreamer.Core.csproj" />
+    <Project Path="src/DeveLiveStreamer.Streaming/DeveLiveStreamer.Streaming.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DeveLiveStreamer.Core.Tests/DeveLiveStreamer.Core.Tests.csproj" />
+    <Project Path="tests/DeveLiveStreamer.Streaming.Tests/DeveLiveStreamer.Streaming.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,93 @@
+name: Android builds
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    outputs:
+      release_signed: ${{ steps.package.outputs.release_signed }}
+    env:
+      BUILD_VERSION: 0.2.${{ github.run_number }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: 21.0.8
+      - uses: android-actions/setup-android@v3
+      - name: Install FFmpeg for SRT/RTMP interoperability tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Install Android workload and SDK
+        run: |
+          dotnet workload install maui-android --skip-manifest-update
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Build, test and verify APK
+        id: package
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          ./eng/build-android.sh
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo 'release_signed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'release_signed=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload installable APK and verification metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeveLiveStreamer-Android-${{ env.BUILD_VERSION }}
+          path: |
+            artifacts/android/*.apk
+            artifacts/android/*.sha256
+            artifacts/android/*.json
+            artifacts/android/alignment.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ env.BUILD_VERSION }}
+          path: artifacts/test-results
+          retention-days: 7
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.build.outputs.release_signed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeveLiveStreamer-Android-0.2.${{ github.run_number }}
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.${{ github.run_number }}
+          name: DeveLiveStreamer 0.2.${{ github.run_number }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*release.apk
+            release/*release.apk.sha256
+            release/*release.apk.json
