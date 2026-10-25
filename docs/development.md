@@ -29,7 +29,7 @@ Android uses `libsrtdroid.so` from the published `srtdroid-core` 1.10.1 AAR (lib
 
 ## Toolchain
 
-The checked-in SDK selector uses .NET **10.0.402** with patch-only roll-forward. This runner installed the SDK, the `maui-android` workload from its manifests, Microsoft JDK **21.0.8**, Android platform **36** and build tools **36.0.0**. MAUI packages are explicitly pinned to **10.0.120**; NuGet lock files are included for the app and tests. The dependency-free core library does not generate a lock file, so desktop tests and Android runtime restore do not overwrite the same lock graph. Update these as a tested set.
+The checked-in SDK selector pins .NET **10.0.402** with roll-forward disabled so local builds and CI use the same SDK and implicit linker dependencies. This runner installed the SDK, the `maui-android` workload from its manifests, Microsoft JDK **21.0.8**, Android platform **36** and build tools **36.0.0**. MAUI packages are explicitly pinned to **10.0.120**; NuGet lock files are included for the app and tests. The dependency-free core library does not generate a lock file, so desktop tests and Android runtime restore do not overwrite the same lock graph. Update these as a tested set.
 
 `eng/setup-android.sh` bootstraps Linux x86-64 and generates an ignored `.tools/env.sh`. Pass a tool directory explicitly to place downloads and workloads on a suitable volume. The current runner uses `/tmp/deve-live-streamer-tools`; those tools must be recreated if that temporary volume is cleared. The source and build scripts do not depend on retaining it.
 
