@@ -65,7 +65,12 @@ try {
     # Validate credentials before removing old packages or running a long publish.
     & keytool -list -keystore $Keystore -alias $KeyAlias -storepass:env DEVELIVESTREAMER_SIGNING_STORE_PASSWORD | Out-Null
     New-Item -ItemType Directory -Force $output | Out-Null
-    Get-ChildItem -LiteralPath $output -Filter '*.apk' -File | Remove-Item -Force
+    # Keep a single current package and matching verification reports, including old shell-build output.
+    Get-ChildItem -LiteralPath $output -File | Where-Object {
+        $_.Name -match '\.apk($|\.(json|sha256)$)' -or $_.Name -eq 'alignment.txt'
+    } | Remove-Item -Force
+    $legacyPublish = Join-Path $output 'publish'
+    if (Test-Path -LiteralPath $legacyPublish) { Remove-Item -LiteralPath $legacyPublish -Recurse -Force }
     # Android's incremental signing target does not track changes to the keystore.
     $bin = Join-Path $root "src/DeveLiveStreamer.App/bin/$Configuration"
     if (Test-Path -LiteralPath $bin) {

@@ -59,10 +59,17 @@ internal static class ScreenCaptureConsent
     public static async Task<Intent?> RequestAsync(Context context)
     {
         var activity = Platform.CurrentActivity ?? throw new InvalidOperationException("The app must be open to start screen capture.");
-        pending = new TaskCompletionSource<Intent?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var manager = (MediaProjectionManager)context.GetSystemService(Context.MediaProjectionService)!;
-        await MainThread.InvokeOnMainThreadAsync(() => activity.StartActivityForResult(manager.CreateScreenCaptureIntent(), RequestCode));
-        return await pending.Task;
+        var request = new TaskCompletionSource<Intent?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Interlocked.CompareExchange(ref pending, request, null) is not null)
+            throw new InvalidOperationException("A screen capture permission request is already open.");
+        try
+        {
+            var manager = (MediaProjectionManager)context.GetSystemService(Context.MediaProjectionService)!;
+            global::Android.Util.Log.Info("DeveLiveStreamer", "Requesting screen/device-audio capture consent");
+            await MainThread.InvokeOnMainThreadAsync(() => activity.StartActivityForResult(manager.CreateScreenCaptureIntent(), RequestCode));
+            return await request.Task;
+        }
+        finally { Interlocked.CompareExchange(ref pending, null, request); }
     }
 
     /// <summary>Called from MainActivity.OnActivityResult; returns whether the result belonged to this request.</summary>

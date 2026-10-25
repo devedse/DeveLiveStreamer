@@ -84,6 +84,8 @@ The Android CI job runs on Ubuntu to retain real FFmpeg/libsrt interoperability 
 
 The PowerShell flow was validated locally with both development signing and a separate release key: all 52 reported test cases passed with coverage, both APKs passed package verification, and switching the signing identity forced a new signature. Incomplete signing configuration was rejected before creating output. The app disables .NET's default desktop publish-RID inference so solution builds retain only the configured Android runtime identifiers.
 
+Builds clear stale TRX/coverage results and packaging clears old APKs and their verification reports. A partially configured CI signing identity fails explicitly; pull requests receive no signing secrets. Screen/camera consent is derived from `RenderScene` (the active scene's visible, nontransparent layers). `CaptureConsentState` prevents repeated requests after denial until the source is reactivated. Live scene switches can acquire screen capture without restarting the encoders or publisher. The live session owns the projection callback, including audio-only capture; system revocation releases capture resources. A consent token creates at most one virtual display, as required by Android 14+. Device-audio-only startup does not create a video display.
+
 ## Saved data
 
 The app stores `scene-collection.json` in its private application-data directory. A save validates the document, writes a temporary file and replaces the current file. The previous valid save is retained as `.bak`; recovery avoids replacing that backup with an invalid latest file. Unknown document versions or invalid source references are rejected. JSON serialization uses generated metadata so it survives Release trimming.
@@ -92,9 +94,9 @@ Images are copied into the app's private `images/` directory. JSON export includ
 
 ## Validation
 
-`build.ps1` (also called by `eng/build-android.sh`) runs both test projects before packaging (51 regular tests plus an opt-in server test; 52 cases reported by the test runner):
+`build.ps1` (also called by `eng/build-android.sh`) runs both test projects before packaging (58 regular tests plus an opt-in server test; 59 cases reported by the test runner):
 
-- **Core (25):** scene references, layer order, history, storage recovery, uncapped output settings, codec-imposed constraints (even 4:2:0 sizes, AAC sample rates) and the layer geometry used by the compositor: center-crop, letterbox, mirroring, all four display rotations and the GL matrix layout.
+- **Core (32):** scene references, layer order, history, storage recovery, uncapped output settings, codec-imposed constraints (even 4:2:0 sizes, AAC sample rates), active-scene capture consent (including hidden/transparent sources, device audio, denial, revocation and reactivation) and the layer geometry used by the compositor: center-crop, letterbox, mirroring, all four display rotations and the GL matrix layout.
 - **Streaming (27):** NAL/AVC/HEVC/AAC/AMF0 round trips, MPEG-TS and FLV round trips, DeveStreamingPlatform URL parsing (OME `streamid` routes, encoded IDs, IPv6, passphrases), the mixer, publisher reconnection/key-frame/video-only behavior, and interoperability with FFmpeg 7.1 over loopback:
   - our MPEG-TS (H.264 and HEVC) decodes in FFmpeg without errors;
   - our SRT publisher delivers every frame to an FFmpeg SRT listener, for H.264 and HEVC;

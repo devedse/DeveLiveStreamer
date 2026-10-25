@@ -441,7 +441,7 @@ internal sealed class Compositor : IDisposable
                     status = network.Status;
                     break;
                 case SourceKind.Screen:
-                    status = screen?.Status ?? (screen is null ? "Screen capture starts when you go live" : screen.Texture.HasFrame ? null : "Waiting for the screen…");
+                    status = screen is null ? "Screen capture needs permission; while live, switch away and back to request it" : screen.Texture.HasFrame ? null : "Waiting for the screen…";
                     break;
                 default: continue;
             }

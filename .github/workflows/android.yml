@@ -77,6 +77,11 @@ jobs:
           KEY_ALIAS: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_ALIAS || '' }}
           KEY_PASSWORD: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: |
+          $values = @($env:KEYSTORE_BASE64, $env:KEYSTORE_PASSWORD, $env:KEY_ALIAS, $env:KEY_PASSWORD)
+          $present = @($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($present -gt 0 -and $present -lt 4) {
+            throw 'Incomplete Android signing configuration. Set all four ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD secrets.'
+          }
           $configured = -not [string]::IsNullOrWhiteSpace($env:KEYSTORE_BASE64) `
             -and -not [string]::IsNullOrWhiteSpace($env:KEYSTORE_PASSWORD) `
             -and -not [string]::IsNullOrWhiteSpace($env:KEY_ALIAS) `

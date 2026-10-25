@@ -25,12 +25,14 @@ $solution = Join-Path $root 'DeveLiveStreamer.slnx'
 
 Push-Location $root
 try {
+    $testResults = Join-Path $root 'artifacts/test-results'
+    if (Test-Path -LiteralPath $testResults) { Remove-Item -LiteralPath $testResults -Recurse -Force }
     dotnet restore $solution --locked-mode
     dotnet build $solution --configuration $Configuration --no-restore @properties
     foreach ($name in @('Core', 'Streaming')) {
         dotnet test "tests/DeveLiveStreamer.$name.Tests/DeveLiveStreamer.$name.Tests.csproj" `
             --configuration $Configuration --no-build --no-restore --collect 'XPlat Code Coverage' `
-            --logger trx --results-directory (Join-Path $root 'artifacts/test-results')
+            --logger trx --results-directory $testResults
     }
     if (-not $SkipPublish) {
         & (Join-Path $root 'eng/Publish-Android.ps1') -Configuration $Configuration -Version $Version `

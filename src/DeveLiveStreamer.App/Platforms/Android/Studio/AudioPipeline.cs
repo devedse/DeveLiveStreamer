@@ -22,12 +22,14 @@ internal sealed class AudioPipeline : IDisposable
     private readonly object codecLock = new();
     private MediaCodec encoder;
     private int restarts;
-    private readonly AudioRecord? microphone, device;
+    private readonly AudioRecord? microphone;
+    private AudioRecord? device;
     private readonly AudioMixerInput? microphoneInput, deviceInput;
     private readonly Thread driver, drain;
     private readonly Thread? deviceThread, microphoneThread;
     private volatile bool running = true;
     private bool started;
+    private volatile bool deviceCapturing = true;
 
     public AudioPipeline(OutputSettings settings, long originNs, MediaProjection? projection, List<string> notes)
     {
@@ -66,7 +68,7 @@ internal sealed class AudioPipeline : IDisposable
         }
         drain = new Thread(Drain) { IsBackground = true, Name = "AudioEncoder" };
         driver = new Thread(Drive) { IsBackground = true, Name = "AudioMixer", Priority = System.Threading.ThreadPriority.Highest };
-        if (device is not null) deviceThread = new Thread(() => Capture(device, deviceInput!)) { IsBackground = true, Name = "DeviceAudio" };
+        if (device is not null) deviceThread = new Thread(() => Capture(device, deviceInput!, isDevice: true)) { IsBackground = true, Name = "DeviceAudio" };
         if (microphone is not null) microphoneThread = new Thread(() => Capture(microphone, microphoneInput!)) { IsBackground = true, Name = "Microphone", Priority = System.Threading.ThreadPriority.Highest };
     }
 
@@ -159,19 +161,20 @@ internal sealed class AudioPipeline : IDisposable
         catch (Exception ex) when (running) { Failure = Studio.Describe("Audio mixing stopped", ex); }
     }
 
-    private void Capture(AudioRecord record, AudioMixerInput input)
+    private void Capture(AudioRecord record, AudioMixerInput input, bool isDevice = false)
     {
         var buffer = new short[FramesPerBlock * record.ChannelCount];
         try
         {
-            while (running)
+            while (running && (!isDevice || deviceCapturing))
             {
                 var read = record.Read(buffer, 0, buffer.Length);
                 if (read <= 0) { if (!running) break; Thread.Sleep(10); continue; }
                 input.Write(buffer.AsSpan(0, read), record.SampleRate, record.ChannelCount);
             }
         }
-        catch (Exception) when (!running) { }
+        catch (Exception) when (!running || (isDevice && !deviceCapturing)) { }
+        catch (Exception ex) { Studio.Describe("Audio capture stopped", ex); }
     }
 
     private void Encode(short[] block, long timeNs)
@@ -241,6 +244,15 @@ internal sealed class AudioPipeline : IDisposable
     }
 
     private static long Now() => Stopwatch.GetTimestamp() * (1_000_000_000 / Stopwatch.Frequency);
+
+    public void StopDeviceCapture()
+    {
+        deviceCapturing = false;
+        try { device?.Stop(); } catch { }
+        if (started) deviceThread?.Join(1000);
+        try { device?.Release(); } catch { }
+        device = null;
+    }
 
     public void Dispose()
     {

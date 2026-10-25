@@ -26,6 +26,8 @@ internal sealed class AndroidStudioEngine : IStudioEngine
     private LiveSession? session;
     private StudioStatus status = StudioStatus.Offline;
     private Timer? statistics;
+    private volatile RenderScene currentScene = RenderScene.Empty;
+    private int captureRevision, captureSyncRunning;
 
     private AndroidStudioEngine()
     {
@@ -50,7 +52,10 @@ internal sealed class AndroidStudioEngine : IStudioEngine
 
     public void UpdateScene(ProjectDocument project)
     {
-        compositor.UpdateScene(RenderScene.From(project));
+        currentScene = RenderScene.From(project);
+        compositor.UpdateScene(currentScene);
+        Interlocked.Increment(ref captureRevision);
+        QueueCaptureSync();
         // While live the session's output configuration stays fixed; the next stream picks up changes.
         if (session is null) compositor.SetOutput(project.Output.OutputWidth, project.Output.OutputHeight, project.Output.Fps);
     }
@@ -93,9 +98,11 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             var notes = new List<string>();
             SetStatus(new StudioStatus(LiveState.Starting, "Preparing your stream…", TimeSpan.Zero, 0, 0, 0, 0, null, Describe(endpoint), []));
 
-            var usesCamera = project.Sources.Any(s => s.Kind == SourceKind.Camera);
-            var usesScreen = project.Sources.Any(s => s.Kind == SourceKind.Screen);
-            if (usesCamera && !CameraPermitted && !await RequestCameraAsync()) notes.Add("Camera access was not allowed; camera sources stay empty.");
+            currentScene = RenderScene.From(project);
+            compositor.UpdateScene(currentScene);
+            var captureConsent = new CaptureConsentState();
+            captureConsent.Update(currentScene);
+            if (captureConsent.RequestCamera(CameraPermitted) && !await RequestCameraAsync()) notes.Add("Camera access was not allowed; camera sources stay empty.");
             if (settings.MicrophoneEnabled || settings.DeviceAudioEnabled)
             {
                 var microphone = await MainThread.InvokeOnMainThreadAsync(() => Permissions.RequestAsync<Permissions.Microphone>());
@@ -108,7 +115,7 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             if (OperatingSystem.IsAndroidVersionAtLeast(33))
                 await MainThread.InvokeOnMainThreadAsync(() => Permissions.RequestAsync<Permissions.PostNotifications>());
             Intent? consent = null;
-            if (usesScreen || settings.DeviceAudioEnabled)
+            if (captureConsent.RequestProjection(false, settings.DeviceAudioEnabled))
             {
                 consent = await ScreenCaptureConsent.RequestAsync(context);
                 if (consent is null) notes.Add("Screen capture was declined; the device screen source and device audio stay off.");
@@ -118,7 +125,7 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             // Camera and microphone service types exist from Android 11; Android 10 only needs the projection type.
             if (OperatingSystem.IsAndroidVersionAtLeast(30))
             {
-                if (usesCamera && CameraPermitted) types |= ForegroundService.TypeCamera;
+                if (captureConsent.UsesCamera && CameraPermitted) types |= ForegroundService.TypeCamera;
                 if (settings.MicrophoneEnabled || settings.DeviceAudioEnabled) types |= ForegroundService.TypeMicrophone;
             }
             if (types == 0) types = ForegroundService.TypeMediaPlayback;
@@ -129,7 +136,7 @@ internal sealed class AndroidStudioEngine : IStudioEngine
                 MediaProjection? projection = null;
                 if (consent is not null)
                     projection = ((MediaProjectionManager)context.GetSystemService(Context.MediaProjectionService)!).GetMediaProjection((int)global::Android.App.Result.Ok, consent);
-                session = await Task.Run(() => LiveSession.Start(this, settings, endpoint, projection, notes));
+                session = await Task.Run(() => LiveSession.Start(this, settings, endpoint, projection, captureConsent, types, notes));
             }
             catch
             {
@@ -138,6 +145,7 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             }
             KeepScreenOn(true);
             statistics = new Timer(_ => { Watchdog(); Refresh(); }, null, 0, 1000);
+            QueueCaptureSync();
         }
         catch (Exception ex)
         {
@@ -145,6 +153,92 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             throw;
         }
         finally { transitions.Release(); }
+    }
+
+    private void QueueCaptureSync()
+    {
+        if (session is null || Interlocked.CompareExchange(ref captureSyncRunning, 1, 0) != 0) return;
+        _ = SynchronizeCaptureAsync();
+    }
+
+    private async Task SynchronizeCaptureAsync()
+    {
+        var processed = -1;
+        try
+        {
+            do
+            {
+                await transitions.WaitAsync();
+                try
+                {
+                    if (session is not { } current) return;
+                    processed = Volatile.Read(ref captureRevision);
+                    current.Consent.Update(currentScene);
+                    if (current.Consent.RequestCamera(CameraPermitted) && !await RequestCameraAsync())
+                        current.AddNote("Camera access was not allowed; camera sources stay empty.");
+                    if (OperatingSystem.IsAndroidVersionAtLeast(30) && current.Consent.UsesCamera && CameraPermitted &&
+                        (current.ServiceTypes & ForegroundService.TypeCamera) == 0)
+                    {
+                        current.ServiceTypes |= ForegroundService.TypeCamera;
+                        await StreamingService.StartAsync(context, current.ServiceTypes);
+                    }
+                    if (current.Consent.RequestProjection(current.Projection is not null, false))
+                    {
+                        var consent = await ScreenCaptureConsent.RequestAsync(context);
+                        current.Consent.Update(currentScene);
+                        if (consent is null)
+                            current.AddNote("Screen capture was declined. Switch away from the screen source and back to try again.");
+                        else if (current.Consent.UsesScreen)
+                        {
+                            current.ServiceTypes |= ForegroundService.TypeMediaProjection;
+                            await StreamingService.StartAsync(context, current.ServiceTypes);
+                            var projection = ((MediaProjectionManager)context.GetSystemService(Context.MediaProjectionService)!)
+                                .GetMediaProjection((int)global::Android.App.Result.Ok, consent)!;
+                            current.AttachProjection(projection);
+                        }
+                    }
+                    if (current.Consent.UsesScreen && current.Projection is not null && !current.ScreenCaptureStarted)
+                        current.StartScreenCapture();
+                    else if (!current.Consent.UsesScreen && !current.Settings.DeviceAudioEnabled && current.Projection is not null)
+                    {
+                        current.ReleaseProjection();
+                        current.ServiceTypes &= ~ForegroundService.TypeMediaProjection;
+                        if (current.ServiceTypes == 0) current.ServiceTypes = ForegroundService.TypeMediaPlayback;
+                        await StreamingService.StartAsync(context, current.ServiceTypes);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (session is { } current) current.AddNote(Studio.Describe("Capture could not be updated", ex));
+                }
+                finally { transitions.Release(); }
+                Refresh();
+            } while (session is not null && processed != Volatile.Read(ref captureRevision));
+        }
+        finally
+        {
+            Interlocked.Exchange(ref captureSyncRunning, 0);
+            if (session is not null && processed != Volatile.Read(ref captureRevision)) QueueCaptureSync();
+        }
+    }
+
+    private async Task ProjectionStoppedAsync(LiveSession current, MediaProjection projection)
+    {
+        await transitions.WaitAsync();
+        try
+        {
+            if (session != current || current.Projection != projection) return;
+            current.Consent.Update(currentScene);
+            current.Consent.ProjectionStopped(current.Settings.DeviceAudioEnabled);
+            current.ReleaseProjection();
+            current.AddNote("Screen capture was stopped from Android. Switch away from the screen source and back to request access again. Restart the stream to restore device audio.");
+            current.ServiceTypes &= ~ForegroundService.TypeMediaProjection;
+            if (current.ServiceTypes == 0) current.ServiceTypes = ForegroundService.TypeMediaPlayback;
+            await StreamingService.StartAsync(context, current.ServiceTypes);
+        }
+        catch (Exception ex) { current.AddNote(Studio.Describe("Screen capture cleanup failed", ex)); }
+        finally { transitions.Release(); }
+        Refresh();
     }
 
     public async Task StopAsync()
@@ -189,7 +283,7 @@ internal sealed class AndroidStudioEngine : IStudioEngine
         if (current.Audio.Failure is { } audioFailure && !current.AudioAbandoned && current.Publisher.AbandonAudio())
         {
             current.AudioAbandoned = true;
-            current.Notes.Add($"{audioFailure}. Streaming video without audio; end and restart the stream to try audio again.");
+            current.AddNote($"{audioFailure}. Streaming video without audio; end and restart the stream to try audio again.");
         }
         // A stalled audio encoder must not hold the stream back: once video is ready, wait a few seconds for audio at most.
         if (current.Video.HasFormat && !current.Audio.HasFormat && !current.AudioAbandoned)
@@ -198,7 +292,7 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             if (DateTime.UtcNow - current.VideoReadyAt > TimeSpan.FromSeconds(5) && current.Publisher.AbandonAudio())
             {
                 current.AudioAbandoned = true;
-                current.Notes.Add($"The AAC encoder produced no audio ({Interlocked.Read(ref current.Audio.BlocksQueued)} blocks queued). " +
+                current.AddNote($"The AAC encoder produced no audio ({Interlocked.Read(ref current.Audio.BlocksQueued)} blocks queued). " +
                     "Streaming video without audio; end and restart the stream to try audio again.");
             }
         }
@@ -217,7 +311,8 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             PublisherState.Idle => "Starting encoders…",
             _ => $"Connecting to {current.Destination}…"
         };
-        var warnings = current.Notes.ToList();
+        List<string> warnings;
+        lock (current.Notes) warnings = current.Notes.ToList();
         if (compositor.CameraSummary is { Length: > 0 } cameras) warnings.Add("Capture: " + cameras);
         if (stats.State != PublisherState.Live)
             warnings.Add($"Pipeline: {Interlocked.Read(ref compositor.FramesToEncoder)} frames to the video encoder, {Interlocked.Read(ref current.Video.FramesEncoded)} encoded" +
@@ -270,25 +365,26 @@ internal sealed class AndroidStudioEngine : IStudioEngine
         public required LivePublisher Publisher { get; init; }
         public required List<string> Notes { get; init; }
         public required string Destination { get; init; }
-        public MediaProjection? Projection { get; init; }
+        public MediaProjection? Projection { get; private set; }
+        private ProjectionCallback? projectionCallback;
+        public required CaptureConsentState Consent { get; init; }
+        public ForegroundService ServiceTypes { get; set; }
+        public bool ScreenCaptureStarted { get; private set; }
         public required AndroidStudioEngine Engine { get; init; }
         public bool AudioAbandoned { get; set; }
         public DateTime? VideoReadyAt { get; set; }
 
-        public static LiveSession Start(AndroidStudioEngine engine, OutputSettings settings, StreamEndpoint endpoint, MediaProjection? projection, List<string> notes)
+        public static LiveSession Start(AndroidStudioEngine engine, OutputSettings settings, StreamEndpoint endpoint, MediaProjection? projection,
+            CaptureConsentState consent, ForegroundService serviceTypes, List<string> notes)
         {
             var compositor = engine.compositor;
             var origin = System.Diagnostics.Stopwatch.GetTimestamp() * (1_000_000_000 / System.Diagnostics.Stopwatch.Frequency);
             VideoEncoder? video = null; AudioPipeline? audio = null;
             LivePublisher? publisher = null;
+            LiveSession? session = null;
             try
             {
                 video = new VideoEncoder(settings, origin, notes);
-                if (projection is not null)
-                {
-                    var (width, height, dpi) = engine.ScreenSize();
-                    compositor.StartScreenCapture(projection, width, height, dpi);
-                }
                 audio = new AudioPipeline(settings, origin, projection, notes);
                 var mixer = audio.Mixer;
                 compositor.Mixer = () => mixer;
@@ -302,11 +398,16 @@ internal sealed class AndroidStudioEngine : IStudioEngine
                     engine.Refresh();
                 };
                 notes.Insert(0, $"Encoder: {video.CodecName} ({settings.VideoCodec}, {settings.OutputWidth}×{settings.OutputHeight} @ {settings.Fps:0.###} fps, {settings.VideoBitrateKbps} kbps)");
-                var session = new LiveSession
+                session = new LiveSession
                 {
                     Video = video, Audio = audio, Publisher = publisher, Notes = notes, Destination = Describe(endpoint),
-                    Projection = projection, Engine = engine, Settings = settings, OriginNs = origin
+                    Engine = engine, Settings = settings, OriginNs = origin, Consent = consent, ServiceTypes = serviceTypes
                 };
+                if (projection is not null)
+                {
+                    session.AttachProjection(projection);
+                    if (consent.UsesScreen) session.StartScreenCapture();
+                }
                 publisher.KeyFrameRequested += () => session.Video.RequestKeyFrame();
                 // A codec may emit its format immediately. Subscribe every consumer before any worker or video input starts.
                 publisher.Start();
@@ -322,8 +423,67 @@ internal sealed class AndroidStudioEngine : IStudioEngine
                 try { compositor.StopScreenCapture(); } catch { }
                 audio?.Dispose(); video?.Dispose();
                 publisher?.StopAsync().GetAwaiter().GetResult();
-                projection?.Stop();
+                if (session is not null) session.ReleaseProjection();
+                else projection?.Stop();
                 throw;
+            }
+        }
+
+        public void AddNote(string message)
+        {
+            lock (Notes) { if (!Notes.Contains(message)) Notes.Add(message); }
+        }
+
+        public void AttachProjection(MediaProjection projection)
+        {
+            Projection = projection;
+            projectionCallback = new ProjectionCallback(this, projection);
+            // Register even for device-audio-only capture so system revocation releases all capture resources.
+            projection.RegisterCallback(projectionCallback, Engine.callbacks);
+        }
+
+        public void StartScreenCapture()
+        {
+            if (Projection is null || ScreenCaptureStarted) return;
+            var (width, height, dpi) = Engine.ScreenSize();
+            try
+            {
+                Engine.compositor.StartScreenCapture(Projection, width, height, dpi);
+                ScreenCaptureStarted = true;
+                Log.Info("DeveLiveStreamer", "Screen capture started for the active scene");
+            }
+            catch
+            {
+                // Android 14+ permits only one virtual display per consent token, including failed attempts.
+                Consent.ProjectionStopped(Settings.DeviceAudioEnabled);
+                ReleaseProjection();
+                throw;
+            }
+        }
+
+        public void ReleaseProjection()
+        {
+            var projection = Projection;
+            Projection = null;
+            if (projection is null) return;
+            try { if (projectionCallback is not null) projection.UnregisterCallback(projectionCallback); } catch { }
+            projectionCallback?.Dispose(); projectionCallback = null;
+            try { Engine.compositor.StopScreenCapture(); } catch { }
+            ScreenCaptureStarted = false;
+            Audio.StopDeviceCapture();
+            try { projection.Stop(); } catch { }
+            projection.Dispose();
+            Log.Info("DeveLiveStreamer", "Capture projection released");
+        }
+
+        private sealed class ProjectionCallback(LiveSession owner, MediaProjection projection) : MediaProjection.Callback
+        {
+            public override void OnStop() => _ = owner.Engine.ProjectionStoppedAsync(owner, projection);
+            public override void OnCapturedContentResize(int width, int height)
+            {
+                if (owner.Projection != projection || width <= 0 || height <= 0) return;
+                var (_, _, dpi) = owner.Engine.ScreenSize();
+                owner.Engine.compositor.ResizeScreenCapture(width, height, dpi);
             }
         }
 
@@ -354,9 +514,10 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             Video = video;
             video.Start();
             compositor.StartEncoding(video.InputSurface, Settings.OutputWidth, Settings.OutputHeight, Settings.Fps);
-            Notes.Add($"{failed.CodecName} returned nothing for {submitted} frames with low-latency, priority, profile and rate-control tuning; " +
-                "restarted it with only resolution, frame rate, bitrate and keyframe interval.");
-            Log.Warn("DeveLiveStreamer", Notes[^1]);
+            var note = $"{failed.CodecName} returned nothing for {submitted} frames with low-latency, priority, profile and rate-control tuning; " +
+                "restarted it with only resolution, frame rate, bitrate and keyframe interval.";
+            AddNote(note);
+            Log.Warn("DeveLiveStreamer", note);
             return true;
         }
 
@@ -365,11 +526,10 @@ internal sealed class AndroidStudioEngine : IStudioEngine
             await Publisher.StopAsync();
             var compositor = Engine.compositor;
             try { compositor.StopEncoding(); } catch { }
-            try { compositor.StopScreenCapture(); } catch { }
+            ReleaseProjection();
             compositor.Mixer = () => null;
             Audio.Dispose();
             Video.Dispose();
-            try { Projection?.Stop(); } catch { }
         }
     }
 
