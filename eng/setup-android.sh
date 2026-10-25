@@ -4,6 +4,24 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tools_dir="${1:-${XDG_CACHE_HOME:-$HOME/.cache}/develivestreamer/toolchain}"
 mkdir -p "$tools_dir/downloads" "$project_root/.tools"
 tools_dir="$(cd "$tools_dir" && pwd)"
+if ! command -v pwsh >/dev/null 2>&1 && [[ ! -x "$project_root/.tools/powershell/pwsh" ]]; then
+    powershell_version=7.6.9
+    powershell_archive="powershell-$powershell_version-linux-x64.tar.gz"
+    powershell_url="https://github.com/PowerShell/PowerShell/releases/download/v$powershell_version"
+    curl -fsSL "$powershell_url/$powershell_archive" -o "$tools_dir/downloads/$powershell_archive"
+    curl -fsSL "$powershell_url/hashes.sha256" -o "$tools_dir/downloads/powershell-hashes.sha256"
+    python3 - "$tools_dir/downloads/$powershell_archive" "$tools_dir/downloads/powershell-hashes.sha256" <<'PY'
+import hashlib, pathlib, sys
+archive, manifest = map(pathlib.Path, sys.argv[1:])
+raw = manifest.read_bytes()
+text = raw.decode('utf-16' if raw.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig')
+expected = next(line.split()[0] for line in text.splitlines() if line.rstrip().endswith(archive.name))
+assert hashlib.sha256(archive.read_bytes()).hexdigest().lower() == expected.lower(), 'PowerShell archive verification failed'
+PY
+    mkdir -p "$project_root/.tools/powershell"
+    tar -xzf "$tools_dir/downloads/$powershell_archive" -C "$project_root/.tools/powershell"
+    chmod +x "$project_root/.tools/powershell/pwsh"
+fi
 if [[ ! -x "$tools_dir/dotnet/dotnet" ]]; then
     curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$tools_dir/downloads/dotnet-install.sh"
     bash "$tools_dir/downloads/dotnet-install.sh" --version 10.0.402 --install-dir "$tools_dir/dotnet" --no-path

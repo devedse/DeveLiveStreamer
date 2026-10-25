@@ -33,6 +33,10 @@ The checked-in SDK selector uses .NET **10.0.402** with patch-only roll-forward.
 
 `eng/setup-android.sh` bootstraps Linux x86-64 and generates an ignored `.tools/env.sh`. Pass a tool directory explicitly to place downloads and workloads on a suitable volume. The current runner uses `/tmp/deve-live-streamer-tools`; those tools must be recreated if that temporary volume is cleared. The source and build scripts do not depend on retaining it.
 
+PowerShell 7.4+ is the build entry point, matching [DeveMobileLPR](https://github.com/devedse/DeveMobileLPR/blob/master/build.ps1). Run `./build.ps1 -Configuration Release` on a configured environment. It checks the workload, restores the solution in locked mode, builds without restoring again, tests both desktop projects without rebuilding and collects TRX/coverage results. It then calls `eng/Publish-Android.ps1`. `-SkipPublish` runs through the tests only; `-Version`, `-ApplicationVersion` and `-ApplicationDisplayVersion` set assembly, numeric Android and display versions. Defaults come from `BUILD_VERSION` / `BUILD_NUMBER` or the app project.
+
+`eng/build-android.sh` loads `.tools/env.sh` and forwards arguments to that same entry point. The Linux bootstrap installs a pinned PowerShell if needed; ordinary builds never install prerequisites. Set `JAVA_HOME/bin` on `PATH` so `keytool` is available. Packaging can also be invoked directly with `pwsh -NoProfile -File eng/Publish-Android.ps1 -Configuration Release`.
+
 When using a preinstalled environment:
 
 ```bash
@@ -72,9 +76,13 @@ For release signing, set these through the build environment or GitHub repositor
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-The keystore is decoded to a temporary file and removed when packaging exits. Store/key passwords are supplied through MSBuild environment references. The published APK is checked against the selected signing certificate. An install already signed with a different development/release identity cannot be updated in place; export the scene collection before changing signing channels.
+The keystore is decoded to a temporary file and removed when packaging exits. Store/key passwords are supplied through MSBuild environment references. Alternatively, pass `-Keystore`, `-KeystorePassword`, `-KeyAlias` and `-KeyPassword` directly to `eng/Publish-Android.ps1`. An incomplete local signing configuration fails. The published APK is checked against the selected signing certificate and requested versions. Old signed intermediate APKs are removed before publishing, forcing signing to run again when switching identities. An install already signed with a different development/release identity cannot be updated in place; export the scene collection before changing signing channels.
 
-The workflow uploads APK/checksum/verification metadata on successful builds, plus test results. Its release job runs only for master pushes that used release signing. Pull-request builds use a development key. Each fresh CI runner creates its own development identity unless an explicit persistent signing policy is configured; CI development APKs are therefore not guaranteed to update one another in place. These workflow files were added locally; no push or remote Actions run has been performed during this implementation.
+The workflow uses DeveMobileLPR's `onyxmueller/build-tag-number` counter and `1.0.<build number>` versioning. The generated number sets Android's numeric version, and the full version is used for assemblies, display, artifacts and release tags. Pull-request builds use the workflow run number without writing counter tags. All four repository secrets must be configured to enable release signing. The release job runs only for a successful, release-signed master push. APKs are uploaded on every successful build; TRX/coverage results are uploaded even if a later step fails. Verification metadata stays in the build workspace; downloadable release assets contain APKs only.
+
+The Android CI job runs on Ubuntu to retain real FFmpeg/libsrt interoperability tests. The app retains its validated Mono runtime and ARM64/x86-64 packaging. PowerShell packaging also supports Windows SDK tool names. The pinned .NET SDK and native library checks remain part of the build. The earlier shell-based workflow completed successfully before this migration.
+
+The PowerShell flow was validated locally with both development signing and a separate release key: all 52 reported test cases passed with coverage, both APKs passed package verification, and switching the signing identity forced a new signature. Incomplete signing configuration was rejected before creating output. The app disables .NET's default desktop publish-RID inference so solution builds retain only the configured Android runtime identifiers.
 
 ## Saved data
 
@@ -84,7 +92,7 @@ Images are copied into the app's private `images/` directory. JSON export includ
 
 ## Validation
 
-`eng/build-android.sh` runs both test projects before packaging (51 regular tests plus an opt-in server test; 52 cases reported by the test runner):
+`build.ps1` (also called by `eng/build-android.sh`) runs both test projects before packaging (51 regular tests plus an opt-in server test; 52 cases reported by the test runner):
 
 - **Core (25):** scene references, layer order, history, storage recovery, uncapped output settings, codec-imposed constraints (even 4:2:0 sizes, AAC sample rates) and the layer geometry used by the compositor: center-crop, letterbox, mirroring, all four display rotations and the GL matrix layout.
 - **Streaming (27):** NAL/AVC/HEVC/AAC/AMF0 round trips, MPEG-TS and FLV round trips, DeveStreamingPlatform URL parsing (OME `streamid` routes, encoded IDs, IPv6, passphrases), the mixer, publisher reconnection/key-frame/video-only behavior, and interoperability with FFmpeg 7.1 over loopback:
