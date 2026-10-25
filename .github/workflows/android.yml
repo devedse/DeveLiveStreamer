@@ -32,6 +32,10 @@ jobs:
           distribution: microsoft
           java-version: 21.0.8
       - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 16111833
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Install FFmpeg for SRT/RTMP interoperability tests
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install Android workload and SDK
