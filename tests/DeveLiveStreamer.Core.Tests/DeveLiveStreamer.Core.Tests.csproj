@@ -23,6 +23,7 @@
     <Compile Include="../../src/DeveLiveStreamer.App/Studio/LayerGeometry.cs" Link="LayerGeometry.cs" />
     <Compile Include="../../src/DeveLiveStreamer.App/Studio/RenderScene.cs" Link="RenderScene.cs" />
     <Compile Include="../../src/DeveLiveStreamer.App/Studio/CaptureConsentState.cs" Link="CaptureConsentState.cs" />
+    <Compile Include="../../src/DeveLiveStreamer.App/Studio/RenderInvalidation.cs" Link="RenderInvalidation.cs" />
   </ItemGroup>
 
 </Project>

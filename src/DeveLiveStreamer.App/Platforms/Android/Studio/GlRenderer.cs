@@ -109,6 +109,15 @@ internal sealed class GlRenderer : IDisposable
     }
 
     public void MakeCurrentOffscreen() => MakeCurrent(pbuffer!);
+    public (int Width, int Height) SurfaceSize(EGLSurface surface)
+    {
+        var width = new int[1]; var height = new int[1];
+        if (!EGL14.EglQuerySurface(display, surface, EGL14.EglWidth, width, 0) ||
+            !EGL14.EglQuerySurface(display, surface, EGL14.EglHeight, height, 0))
+            throw new InvalidOperationException($"Could not query the preview buffer size (EGL error 0x{EGL14.EglGetError():X}).");
+        return (width[0], height[0]);
+    }
+
     public void SetSwapInterval(int interval) => EGL14.EglSwapInterval(display, interval);
     public void SetPresentationTime(EGLSurface surface, long nanoseconds) => EGLExt.EglPresentationTimeANDROID(display, surface, nanoseconds);
     public bool Swap(EGLSurface surface) => EGL14.EglSwapBuffers(display, surface);

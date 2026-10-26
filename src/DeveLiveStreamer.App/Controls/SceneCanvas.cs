@@ -9,13 +9,13 @@ public sealed class SceneCanvas : ContentView
     private readonly SceneInteractionView overlay;
     private readonly Dictionary<string, (SourceKind Kind, View View)> views = [];
     private EditorSession? session;
-    private PointF start;
-    private double startX, startY, startWidth, startHeight;
-    private bool resizing, transforming;
+    private SourceGesture? gesture;
+    private string? selectedItemId, selectedSceneId;
     public event EventHandler? SelectionChanged;
 
     public SceneCanvas()
     {
+        SemanticProperties.SetDescription(this, "Scene preview");
         overlay = new SceneInteractionView { Drawable = new SelectionDrawable(this), BackgroundColor = Colors.Transparent };
         var host = new Grid { BackgroundColor = Color.FromArgb("#0A0F15"), IsClippedToBounds = true };
         // With a native engine the preview is the compositor's own output; otherwise MAUI views approximate it.
@@ -28,8 +28,32 @@ public sealed class SceneCanvas : ContentView
         overlay.CancelInteraction += (_, _) => Finish(true);
         Unloaded += (_, _) => Finish(true);
     }
-    public void SetSession(EditorSession value) { session = value; UpdateLayers(); }
-    public void Refresh() => UpdateLayers();
+    public void SetSession(EditorSession value) { session = value; gesture = new SourceGesture(value.Editor); Refresh(); }
+    public void Refresh() { SyncSelection(); UpdateLayers(); }
+    public SourceInteractionMode Mode
+    {
+        get => gesture?.Mode ?? SourceInteractionMode.Select;
+        set
+        {
+            if (gesture is not null) gesture.Mode = value;
+            overlay.CaptureDrag = value != SourceInteractionMode.Select;
+            overlay.Invalidate();
+        }
+    }
+    public void SyncSelection()
+    {
+        if (session is null) return;
+        if (selectedItemId != session.Editor.SelectedItemId || selectedSceneId != session.Editor.Project.SelectedSceneId)
+        {
+            Mode = SourceInteractionMode.Select;
+            selectedItemId = session.Editor.SelectedItemId; selectedSceneId = session.Editor.Project.SelectedSceneId;
+        }
+    }
+    public void SelectItem(string itemId)
+    {
+        gesture?.Select(itemId); Refresh(); SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+    public void CancelGesture() => Finish(true);
     private Rect ItemBounds(SceneItem item) => new(item.X * Width, item.Y * Height, item.Width * Width, item.Height * Height);
 
     private void UpdateLayers()
@@ -92,48 +116,23 @@ public sealed class SceneCanvas : ContentView
     }
     private void Start(object? sender, TouchEventArgs args)
     {
-        if (session is null || args.Touches.Length == 0) return;
-        start = args.Touches[0];
-        var editor = session.Editor;
-        var selected = editor.SelectedItem;
-        resizing = selected is not null && selected.Visible && !selected.Locked &&
-            Math.Abs(start.X - ItemBounds(selected).Right) < 22 && Math.Abs(start.Y - ItemBounds(selected).Bottom) < 22;
-        if (!resizing)
-        {
-            selected = editor.Project.SelectedScene.Items.LastOrDefault(i => i.Visible && ItemBounds(i).Contains(start.X, start.Y));
-            editor.SelectedItemId = selected?.Id;
-            SelectionChanged?.Invoke(this, EventArgs.Empty);
-        }
-        if (selected is { Locked: false })
-        {
-            startX = selected.X; startY = selected.Y; startWidth = selected.Width; startHeight = selected.Height;
-            editor.BeginTransform(); transforming = true;
-        }
+        if (gesture is null || args.Touches.Length == 0 || Width <= 0 || Height <= 0) return;
+        var point = args.Touches[0];
+        gesture.Begin(point.X / Width, point.Y / Height);
+        SyncSelection();
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
         overlay.Invalidate();
     }
     private void Drag(object? sender, TouchEventArgs args)
     {
-        if (!transforming || session?.Editor.SelectedItem is not { } item || args.Touches.Length == 0 || Width <= 0 || Height <= 0) return;
+        if (gesture is null || args.Touches.Length == 0 || Width <= 0 || Height <= 0) return;
         var point = args.Touches[0];
-        var dx = (point.X - start.X) / Width; var dy = (point.Y - start.Y) / Height;
-        if (resizing)
-        {
-            item.Width = Math.Max(1d / session.Editor.Project.Output.CanvasWidth, startWidth + dx);
-            item.Height = Math.Max(1d / session.Editor.Project.Output.CanvasHeight, startHeight + dy);
-        }
-        else { item.X = Snap(startX + dx, item.Width); item.Y = Snap(startY + dy, item.Height); }
+        gesture.Drag(point.X / Width, point.Y / Height);
         UpdateLayers();
-    }
-    private static double Snap(double position, double size)
-    {
-        foreach (var target in new[] { 0d, .5 - size / 2, 1 - size })
-            if (Math.Abs(position - target) < .012) return target;
-        return position;
     }
     private void Finish(bool cancel)
     {
-        if (!transforming || session is null) return;
-        transforming = false; session.Editor.EndTransform(cancel); UpdateLayers();
+        gesture?.Finish(cancel); UpdateLayers();
     }
     internal static Color ParseColor(string value)
     {
@@ -148,11 +147,6 @@ public sealed class SceneCanvas : ContentView
             var rect = canvas.ItemBounds(item);
             graphics.StrokeColor = item.Locked ? Theme.Muted : Theme.Accent; graphics.StrokeSize = 1.5f;
             graphics.DrawRectangle((float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height);
-            if (item.Locked) return;
-            graphics.FillColor = Theme.Accent;
-            foreach (var point in new[] { new Point(rect.Left, rect.Top), new Point(rect.Right, rect.Top),
-                new Point(rect.Left, rect.Bottom), new Point(rect.Right, rect.Bottom) })
-                graphics.FillRectangle((float)point.X - 4, (float)point.Y - 4, 8, 8);
         }
     }
 }

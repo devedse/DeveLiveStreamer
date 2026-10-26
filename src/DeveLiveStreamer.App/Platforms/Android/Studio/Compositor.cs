@@ -49,7 +49,8 @@ internal sealed class Compositor : IDisposable
     private long renderedThisSecond, secondStart;
     private int cameraCount;
     // Offline, the preview is only redrawn when something visible may have changed.
-    private volatile bool dirty = true;
+    private readonly RenderInvalidation invalidation = new();
+    private bool previewNeedsFollowUp;
     private CameraManager? cameraManager;
 
     public Compositor(Context context, Handler callbacks)
@@ -70,7 +71,9 @@ internal sealed class Compositor : IDisposable
     private long encoderSwapFailures;
     public event Action? SourcesChanged;
 
-    public void UpdateScene(RenderScene value) { scene = value; dirty = true; }
+    public void UpdateScene(RenderScene value) { scene = value; Invalidate(); }
+
+    private void Invalidate() { invalidation.Request(); wake.Set(); }
 
     public void SetOutput(int width, int height, double fps) => Post(() => ApplyOutput(width, height, fps));
 
@@ -92,10 +95,16 @@ internal sealed class Compositor : IDisposable
         gl.MakeCurrent(egl);
         gl.SetSwapInterval(0); // never let display vsync pace the output
         preview = (surface, egl, width, height);
-        dirty = true;
+        previewNeedsFollowUp = true;
+        Invalidate();
     });
 
-    public void ResizePreview(int width, int height) => Post(() => { if (preview is { } p) preview = p with { Width = width, Height = height }; dirty = true; });
+    public void ResizePreview(int width, int height) => Post(() =>
+    {
+        if (preview is { } p) preview = p with { Width = width, Height = height };
+        previewNeedsFollowUp = true;
+        Invalidate();
+    });
     public void DetachPreview() => Invoke(DetachPreviewNow);
 
     private void DetachPreviewNow()
@@ -200,13 +209,14 @@ internal sealed class Compositor : IDisposable
 
     private void Render(long frameTime)
     {
+        // Capture the redraw version before taking the scene snapshot. A later UI update belongs to the next frame.
+        var version = invalidation.Version;
         var current = scene;
-        if (SyncSources(current)) dirty = true;
-        foreach (var camera in cameras.Values) if (camera.Texture.Update()) dirty = true;
-        foreach (var network in networks.Values) if (network.Texture.Update()) dirty = true;
-        if (screen?.Texture.Update() == true) dirty = true;
-        if (encoder is null && !dirty) return;
-        dirty = false;
+        if (SyncSources(current)) Invalidate();
+        foreach (var camera in cameras.Values) if (camera.Texture.Update()) Invalidate();
+        foreach (var network in networks.Values) if (network.Texture.Update()) Invalidate();
+        if (screen?.Texture.Update() == true) Invalidate();
+        if (encoder is null && !invalidation.NeedsRender) return;
 
         gl.MakeCurrent(encoder?.Egl ?? preview!.Value.Egl);
         if (encoder is null) EnsurePreviewFramebuffer();
@@ -218,6 +228,7 @@ internal sealed class Compositor : IDisposable
         var placeholders = encoder is null;
         foreach (var layer in current.Layers) DrawLayer(layer, target.Width, target.Height, placeholders);
 
+        var presented = encoder is not null;
         if (encoder is { } e)
         {
             gl.MakeCurrent(e.Egl);
@@ -232,12 +243,24 @@ internal sealed class Compositor : IDisposable
         {
             lastPreview = frameTime;
             gl.MakeCurrent(p.Egl);
-            GlRenderer.BindTarget(null, p.Width, p.Height);
+            var size = gl.SurfaceSize(p.Egl);
+            GlRenderer.BindTarget(null, size.Width, size.Height);
             GlRenderer.Clear(0.04f, 0.06f, 0.08f);
-            var (x, y, w, h) = LayerGeometry.Contain((double)target.Width / target.Height, (double)p.Width / p.Height);
-            gl.DrawTexture(target.Texture, false, (x, y, w, h), FlipV, 1);
-            gl.Swap(p.Egl);
+            // A TextureView resize can arrive before EGL replaces its old backing buffer. Do not draw the new
+            // viewport into that shorter buffer: Android would stretch the clipped frame to fill the resized view.
+            var matchesView = size == (p.Width, p.Height);
+            if (matchesView && size.Width > 0 && size.Height > 0)
+            {
+                var (x, y, w, h) = LayerGeometry.Contain((double)target.Width / target.Height, (double)size.Width / size.Height);
+                gl.DrawTexture(target.Texture, false, (x, y, w, h), FlipV, 1);
+            }
+            var swapped = gl.Swap(p.Egl);
+            var resizedDuringSwap = gl.SurfaceSize(p.Egl) != size;
+            if (!swapped || !matchesView || resizedDuringSwap || previewNeedsFollowUp) Invalidate();
+            previewNeedsFollowUp = false;
+            presented |= swapped && matchesView;
         }
+        if (presented) invalidation.Presented(version);
         renderedThisSecond++;
         if (frameTime - secondStart >= 1_000_000_000)
         {

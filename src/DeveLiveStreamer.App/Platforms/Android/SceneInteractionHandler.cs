@@ -2,19 +2,20 @@ using Android.Content;
 using Android.Views;
 using Microsoft.Maui.Handlers;
 using Microsoft.Maui.Platform;
+using DeveLiveStreamer.App.Controls;
 
 namespace DeveLiveStreamer.App.Platforms.Android;
 
 public sealed class SceneInteractionHandler : GraphicsViewHandler
 {
-    protected override PlatformTouchGraphicsView CreatePlatformView() => new SceneTouchView(Context);
+    protected override PlatformTouchGraphicsView CreatePlatformView() => new SceneTouchView(Context, () => VirtualView is SceneInteractionView { CaptureDrag: true });
 
-    private sealed class SceneTouchView(Context context) : PlatformTouchGraphicsView(context)
+    private sealed class SceneTouchView(Context context, Func<bool> captureDrag) : PlatformTouchGraphicsView(context)
     {
         public override bool OnTouchEvent(MotionEvent? e)
         {
             if (e?.ActionMasked == MotionEventActions.Down)
-                Parent?.RequestDisallowInterceptTouchEvent(true);
+                Parent?.RequestDisallowInterceptTouchEvent(captureDrag());
             try { return base.OnTouchEvent(e); }
             finally
             {

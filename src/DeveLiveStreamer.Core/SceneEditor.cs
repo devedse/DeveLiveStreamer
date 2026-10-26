@@ -103,7 +103,29 @@ public sealed class SceneEditor
     public void FitSelected() => Edit(_ =>
     {
         if (SelectedItem is not { Locked: false } item) return;
+        var scale = 1 / Math.Max(item.Width, item.Height);
+        item.Width *= scale; item.Height *= scale;
+        item.X = (1 - item.Width) / 2; item.Y = (1 - item.Height) / 2;
+    });
+
+    public void StretchSelected() => Edit(_ =>
+    {
+        if (SelectedItem is not { Locked: false } item) return;
         item.X = item.Y = 0; item.Width = item.Height = 1;
+    });
+
+    public void CenterSelected(bool horizontal = true, bool vertical = true) => Edit(_ =>
+    {
+        if (SelectedItem is not { Locked: false } item) return;
+        if (horizontal) item.X = (1 - item.Width) / 2;
+        if (vertical) item.Y = (1 - item.Height) / 2;
+    });
+
+    public void MirrorSelected() => Edit(p =>
+    {
+        if (SelectedItem is not { Locked: false } item) return;
+        var source = p.SourceFor(item);
+        source.Mirror = !source.Mirror;
     });
 
     public void Undo()

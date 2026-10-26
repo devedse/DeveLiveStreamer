@@ -8,14 +8,17 @@ public sealed class EditorPage : ContentPage
 {
     private readonly EditorSession session;
     private readonly SceneCanvas canvas = new();
-    private readonly HorizontalStackLayout sceneButtons = new() { Spacing = 8 };
     private readonly VerticalStackLayout sources = new() { Spacing = 3 };
-    private readonly Label sceneTitle = Theme.Label("Camera", 20, bold: true);
+    private readonly Button sceneTitle;
     private readonly Label outputInfo = Theme.Label("1920 × 1080 · 30 fps", 11, Theme.Muted);
     private readonly Label saved = Theme.Label("Saved on this device", 10, Theme.Muted);
     private readonly Label sourceCount = Theme.Caption("4 SOURCES");
     private readonly Label selectedName = Theme.Label("Tap a source to select it", 12, Theme.Muted);
     private readonly Button properties;
+    private readonly Button moveSource, resizeSource, sourceActions;
+    private readonly ScrollView editorScroll;
+    private readonly Border previewBorder, sourceActionBar;
+    private readonly Label interactionHint = Theme.Label("Select a source in the preview or list", 10, Theme.Muted);
     private readonly Button allowCamera;
     private readonly Button goLive;
     private readonly Label liveChip = Theme.Label("●  OFFLINE", 10, Theme.Muted, true);
@@ -43,6 +46,10 @@ public sealed class EditorPage : ContentPage
 
         var pageContent = new VerticalStackLayout { Spacing = 15, Padding = new Thickness(16, 8, 16, 18) };
         var previewHeading = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(GridLength.Auto) } };
+        sceneTitle = Theme.Button("Camera ▾", () => Run(ChooseScene));
+        sceneTitle.BackgroundColor = Colors.Transparent; sceneTitle.FontSize = 20;
+        sceneTitle.Padding = new Thickness(0); sceneTitle.HeightRequest = 36; sceneTitle.HorizontalOptions = LayoutOptions.Start;
+        SemanticProperties.SetDescription(sceneTitle, "Choose scene");
         var titleStack = new VerticalStackLayout { Spacing = 3 }; titleStack.Children.Add(Theme.Caption("SCENE PREVIEW")); titleStack.Children.Add(sceneTitle);
         previewHeading.Add(titleStack, 0);
         liveChipCard = Theme.Card(liveChip, new Thickness(10, 6));
@@ -53,35 +60,45 @@ public sealed class EditorPage : ContentPage
 
         canvas.HeightRequest = 200;
         canvas.SizeChanged += (_, _) => UpdateCanvasAspect();
-        var previewBorder = Theme.Card(canvas, new Thickness(0));
+        previewBorder = Theme.Card(canvas, new Thickness(0));
         previewBorder.StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 8 };
         pageContent.Children.Add(previewBorder);
 
-        var previewToolbar = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(44), new(44), new(44) } };
+        var previewToolbar = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(44), new(44) } };
         previewToolbar.Add(outputInfo, 0);
         undo = Theme.Icon("undo", "Undo edit", () => session.Editor.Undo());
         redo = Theme.Icon("redo", "Redo edit", () => session.Editor.Redo());
         previewToolbar.Add(undo, 1); previewToolbar.Add(redo, 2);
-        previewToolbar.Add(Theme.Icon("expand", "Fit selected source to canvas", () => session.Editor.FitSelected()), 3);
         pageContent.Children.Add(previewToolbar);
 
-        var scenesHeading = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(44), new(44) } };
-        scenesHeading.Add(Theme.Caption("SCENES"), 0);
-        scenesHeading.Add(Theme.Icon("more", "Scene actions", () => Run(SceneMenu)), 1);
-        scenesHeading.Add(Theme.Icon("plus", "Add a scene", () => Run(AddScene)), 2);
-        var sceneSection = new VerticalStackLayout { Spacing = 8 };
-        sceneSection.Children.Add(scenesHeading);
-        sceneSection.Children.Add(new ScrollView { Orientation = ScrollOrientation.Horizontal, HorizontalScrollBarVisibility = ScrollBarVisibility.Never, Content = sceneButtons });
-        pageContent.Children.Add(sceneSection);
+        var selectionControls = new VerticalStackLayout { Spacing = 5 };
+        selectedName.FontSize = 12;
+        selectionControls.Children.Add(selectedName);
+        var actionButtons = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection {
+            new(GridLength.Star), new(GridLength.Star), new(GridLength.Star), new(GridLength.Star) }, ColumnSpacing = 5 };
+        moveSource = Theme.Button("Move", () => ToggleInteraction(SourceInteractionMode.Move));
+        resizeSource = Theme.Button("Resize", () => ToggleInteraction(SourceInteractionMode.Resize));
+        properties = Theme.Button("Properties", () => Run(OpenProperties));
+        sourceActions = Theme.Button("Actions ▾", () => Run(SourceActions));
+        var controls = new[] { moveSource, resizeSource, properties, sourceActions };
+        for (var i = 0; i < controls.Length; i++)
+        {
+            controls[i].FontSize = 11; controls[i].Padding = new Thickness(4, 0);
+            controls[i].IsEnabled = false; controls[i].Opacity = .35;
+            actionButtons.Add(controls[i], i);
+        }
+        SemanticProperties.SetDescription(moveSource, "Move selected source");
+        SemanticProperties.SetDescription(resizeSource, "Resize selected source");
+        SemanticProperties.SetDescription(sourceActions, "Selected source actions");
+        selectionControls.Children.Add(actionButtons); selectionControls.Children.Add(interactionHint);
+        sourceActionBar = Theme.Card(selectionControls, new Thickness(10));
+        pageContent.Children.Add(sourceActionBar);
 
         var sourcePanel = new VerticalStackLayout { Spacing = 8 };
         var sourceHeading = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(GridLength.Auto) } };
         sourceHeading.Add(sourceCount, 0); sourceHeading.Add(Theme.Button("+ Add source", () => Run(AddSource)), 1);
         sourcePanel.Children.Add(sourceHeading); sourcePanel.Children.Add(sources);
-        var selectionBar = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(GridLength.Auto) }, Padding = new Thickness(0, 8, 0, 0) };
-        selectionBar.Add(selectedName, 0);
-        properties = Theme.Button("Properties", () => Run(OpenProperties)); selectionBar.Add(properties, 1);
-        sourcePanel.Children.Add(selectionBar); pageContent.Children.Add(Theme.Card(sourcePanel));
+        pageContent.Children.Add(Theme.Card(sourcePanel));
 
         allowCamera = Theme.Button("Allow camera access", () => Run(AllowCamera));
         pageContent.Children.Add(allowCamera);
@@ -94,7 +111,8 @@ public sealed class EditorPage : ContentPage
         goLive = Theme.Button("Go live", () => Run(ToggleLive), true);
         footer.Add(goLive, 1);
         var root = new Grid { RowDefinitions = new RowDefinitionCollection { new(62), new(GridLength.Star), new(60) } };
-        root.Add(header, 0, 0); root.Add(new ScrollView { Content = pageContent }, 0, 1); root.Add(footer, 0, 2); Content = root;
+        editorScroll = new ScrollView { Content = pageContent };
+        root.Add(header, 0, 0); root.Add(editorScroll, 0, 1); root.Add(footer, 0, 2); Content = root;
         canvas.SelectionChanged += (_, _) => RenderSources();
         session.Changed += (_, _) => MainThread.BeginInvokeOnMainThread(Render);
         session.SaveStateChanged += (_, _) => MainThread.BeginInvokeOnMainThread(UpdateLiveStatus);
@@ -123,23 +141,11 @@ public sealed class EditorPage : ContentPage
     private void Render()
     {
         var editor = session.Editor; var p = editor.Project;
-        sceneTitle.Text = p.SelectedScene.Name;
+        sceneTitle.Text = p.SelectedScene.Name + " ▾";
         outputInfo.Text = $"{p.Output.OutputWidth} × {p.Output.OutputHeight} · {p.Output.Fps:0.##} fps";
         undo.IsEnabled = editor.CanUndo; redo.IsEnabled = editor.CanRedo;
         undo.Opacity = editor.CanUndo ? 1 : .3; redo.Opacity = editor.CanRedo ? 1 : .3;
         allowCamera.IsVisible = engine.IsSupported && !engine.CameraPermitted && p.SelectedScene.Items.Any(i => p.SourceFor(i).Kind == SourceKind.Camera);
-        sceneButtons.Children.Clear();
-        for (var i = 0; i < p.Scenes.Count; i++)
-        {
-            var scene = p.Scenes[i]; var selected = scene.Id == p.SelectedSceneId;
-            var stack = new VerticalStackLayout { Spacing = 5 };
-            stack.Children.Add(Theme.Label($"{i + 1:00}  /  SCENE", 8, selected ? Theme.Accent : Theme.Muted, true));
-            stack.Children.Add(Theme.Label(scene.Name, 12, selected ? Theme.Text : Theme.Muted, true));
-            var tile = Theme.Card(stack, new Thickness(13, 10)); tile.MinimumWidthRequest = 112;
-            if (selected) { tile.BackgroundColor = Theme.AccentDark; tile.Stroke = new SolidColorBrush(Theme.Accent); }
-            var tap = new TapGestureRecognizer(); tap.Tapped += (_, _) => editor.SelectScene(scene.Id); tile.GestureRecognizers.Add(tap);
-            SemanticProperties.SetDescription(tile, $"Scene {scene.Name}"); sceneButtons.Children.Add(tile);
-        }
         UpdateCanvasAspect(); RenderSources(); canvas.Refresh(); UpdateLiveStatus();
     }
 
@@ -230,6 +236,7 @@ public sealed class EditorPage : ContentPage
     }
     private void RenderSources()
     {
+        canvas.SyncSelection();
         var editor = session.Editor; sources.Children.Clear();
         sourceCount.Text = $"SOURCES  /  {editor.Project.SelectedScene.Items.Count:00}";
         foreach (var item in editor.Project.SelectedScene.Items.AsEnumerable().Reverse())
@@ -251,15 +258,80 @@ public sealed class EditorPage : ContentPage
             }
             row.Add(Theme.Icon(item.Visible ? "eye" : "hidden", "Toggle source visibility", () => editor.Edit(_ => item.Visible = !item.Visible)), 2);
             row.Add(Theme.Icon(item.Locked ? "lock" : "unlock", "Toggle source lock", () => editor.Edit(_ => item.Locked = !item.Locked)), 3);
-            var tap = new TapGestureRecognizer(); tap.Tapped += (_, _) => { editor.SelectedItemId = item.Id; RenderSources(); canvas.Refresh(); };
+            SemanticProperties.SetDescription(row, $"Source {source.Name}{(selected ? ", selected" : "")}");
+            var tap = new TapGestureRecognizer(); tap.Tapped += (_, _) =>
+            {
+                canvas.SelectItem(item.Id);
+                Run(() => editorScroll.ScrollToAsync(sourceActionBar, ScrollToPosition.MakeVisible, true));
+            };
             row.GestureRecognizers.Add(tap);
             sources.Children.Add(row);
         }
         if (editor.Project.SelectedScene.Items.Count == 0)
             sources.Children.Add(Theme.Label("An empty canvas. Add your first source.", 12, Theme.Muted));
-        var selectedItem = editor.SelectedItem;
-        selectedName.Text = selectedItem is null ? "Tap a source to select it" : editor.Project.SourceFor(selectedItem).Name;
-        properties.IsEnabled = selectedItem is not null;
+        RenderSelectionActions();
+    }
+
+    private void ToggleInteraction(SourceInteractionMode mode)
+    {
+        canvas.Mode = canvas.Mode == mode ? SourceInteractionMode.Select : mode;
+        RenderSelectionActions();
+        if (canvas.Mode != SourceInteractionMode.Select)
+            Run(() => editorScroll.ScrollToAsync(previewBorder, ScrollToPosition.MakeVisible, true));
+    }
+
+    private void RenderSelectionActions()
+    {
+        var editor = session.Editor;
+        var item = editor.SelectedItem;
+        selectedName.Text = item is null ? "No source selected" : editor.Project.SourceFor(item).Name + (item.Locked ? " · locked" : "");
+        var canTransform = item is { Visible: true, Locked: false, Opacity: > 0 };
+        if (!canTransform) canvas.Mode = SourceInteractionMode.Select;
+        moveSource.IsEnabled = resizeSource.IsEnabled = canTransform;
+        properties.IsEnabled = sourceActions.IsEnabled = item is not null;
+        foreach (var button in new[] { moveSource, resizeSource, properties, sourceActions }) button.Opacity = button.IsEnabled ? 1 : .35;
+        foreach (var (button, mode) in new[] { (moveSource, SourceInteractionMode.Move), (resizeSource, SourceInteractionMode.Resize) })
+        {
+            var active = canvas.Mode == mode;
+            button.BackgroundColor = active ? Theme.Accent : Theme.Raised;
+            button.TextColor = active ? Theme.Background : Theme.Text;
+        }
+        interactionHint.Text = item is null ? "Select a source in the preview or list" : canvas.Mode switch
+        {
+            SourceInteractionMode.Move => "Drag anywhere to move · tap Move to finish",
+            SourceInteractionMode.Resize => "Drag anywhere to resize · tap Resize to finish",
+            _ => item.Locked ? "Unlock in Actions to move or resize" : "Choose Move or Resize to adjust this source"
+        };
+    }
+
+    private async Task SourceActions()
+    {
+        canvas.CancelGesture();
+        var editor = session.Editor;
+        if (editor.SelectedItem is not { } item) return;
+        var options = new List<string>();
+        if (!item.Locked) options.AddRange(["Center", "Center horizontally", "Center vertically", "Fit to canvas", "Stretch to canvas", "Mirror horizontally"]);
+        options.AddRange(["Move up", "Move down", "Bring to front", "Send to back", item.Visible ? "Hide" : "Show", item.Locked ? "Unlock" : "Lock", "Remove from scene"]);
+        var action = await DisplayActionSheetAsync(editor.Project.SourceFor(item).Name, "Cancel", null, options.ToArray());
+        if (editor.SelectedItem?.Id != item.Id) return;
+        switch (action)
+        {
+            case "Center": editor.CenterSelected(); break;
+            case "Center horizontally": editor.CenterSelected(vertical: false); break;
+            case "Center vertically": editor.CenterSelected(horizontal: false); break;
+            case "Fit to canvas": editor.FitSelected(); break;
+            case "Stretch to canvas": editor.StretchSelected(); break;
+            case "Mirror horizontally": editor.MirrorSelected(); break;
+            case "Move up": editor.MoveSelected(1); break;
+            case "Move down": editor.MoveSelected(-1); break;
+            case "Bring to front": editor.MoveSelected(editor.Project.SelectedScene.Items.Count); break;
+            case "Send to back": editor.MoveSelected(-editor.Project.SelectedScene.Items.Count); break;
+            case "Hide": case "Show": editor.Edit(_ => item.Visible = !item.Visible); break;
+            case "Lock": case "Unlock": editor.Edit(_ => item.Locked = !item.Locked); break;
+            case "Remove from scene":
+                if (await DisplayAlertAsync("Remove source?", "Other scenes using this source will keep it.", "Remove", "Cancel")) editor.DeleteSelected();
+                break;
+        }
     }
     private static string KindIcon(SourceKind kind) => kind switch { SourceKind.Camera => "camera", SourceKind.Text => "text", SourceKind.Image => "image", SourceKind.Color => "square", SourceKind.Screen => "display", _ => "link" };
     private async void Run(Func<Task> action)
@@ -270,6 +342,16 @@ public sealed class EditorPage : ContentPage
     {
         var name = await DisplayPromptAsync("New scene", "Give this scene a name", "Create", "Cancel", placeholder: "Scene name");
         if (name is not null) session.Editor.AddScene(name);
+    }
+    private async Task ChooseScene()
+    {
+        var editor = session.Editor;
+        var choices = editor.Project.Scenes.Select(s => s.Name).Concat(["＋ New scene", "Scene actions…"]).ToArray();
+        var choice = await DisplayActionSheetAsync("Choose scene", "Cancel", null, choices);
+        canvas.CancelGesture();
+        if (choice == "＋ New scene") await AddScene();
+        else if (choice == "Scene actions…") await SceneMenu();
+        else if (editor.Project.Scenes.FirstOrDefault(s => s.Name == choice) is { } scene) editor.SelectScene(scene.Id);
     }
     private async Task SceneMenu()
     {

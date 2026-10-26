@@ -54,12 +54,12 @@ public sealed class SourcePropertiesPage : ContentPage
             "Choose the camera for this source. Sources using the same camera share one capture. Running different cameras at once depends on your phone's hardware."));
         if (source.Kind is SourceKind.Camera or SourceKind.Image or SourceKind.Screen or SourceKind.Network or SourceKind.Text)
             body.Children.Add(Theme.Field("Mirror horizontally", mirror, source.Kind == SourceKind.Camera ? "Front cameras arrive mirrored like a selfie; turn this on to show viewers the unmirrored view." : null));
-        if (source.Kind == SourceKind.Screen) body.Children.Add(new Label { Text = "The whole device screen is captured while you're live. Android asks for permission when you go live.", FontSize = 12, TextColor = Theme.Muted });
+        if (source.Kind == SourceKind.Screen) body.Children.Add(new Label { Text = "Captures the display or app you choose in Android's dialog. Permission is requested when this screen source is active while you're live.", FontSize = 12, TextColor = Theme.Muted });
         body.Children.Add(Theme.Caption("TRANSFORM  /  CANVAS PIXELS"));
         body.Children.Add(Pair(Theme.Field("Position X", x), Theme.Field("Position Y", y)));
         body.Children.Add(Pair(Theme.Field("Width", width), Theme.Field("Height", height)));
         body.Children.Add(Theme.Field("Opacity (%)", opacity));
-        body.Children.Add(new Label { Text = "You can also drag the source in the preview and resize it from the bottom-right handle. Source content is shared by scenes that reference it.", FontSize = 11, TextColor = Theme.Muted });
+        body.Children.Add(new Label { Text = "Select Move or Resize in the editor, then drag anywhere in the preview to adjust the selected source. Source content is shared by scenes that reference it.", FontSize = 11, TextColor = Theme.Muted });
         body.Children.Add(Pair(Theme.Button("Move up", () => editor.MoveSelected(1)), Theme.Button("Move down", () => editor.MoveSelected(-1))));
         var delete = Theme.Button("Delete source from scene", async () =>
         {

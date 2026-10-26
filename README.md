@@ -11,7 +11,7 @@ The Android app composes OBS-style scenes on the GPU and streams them over **SRT
 ## Features
 
 - Scenes with layered sources: cameras (pick any lens), the device screen, incoming RTMP/SRT streams (pulled, or pushed to the phone), images, text and colors.
-- Drag, resize, order, hide and lock sources; precise transforms in Properties; undo/redo; automatic saving with backup recovery; JSON import/export.
+- Select sources in the preview or list, then use dedicated Move/Resize modes without grabbing layers behind them. Center, fit, stretch, mirror, order, hide and lock through Actions; precise transforms in Properties; undo/redo; automatic saving with backup recovery; JSON import/export.
 - The preview is the compositor's actual output frame.
 - **Go live** with H.264 or HEVC hardware encoding and AAC audio (microphone, device audio and network-source audio mixed). Custom resolution and rational frame rate with no app-imposed limits; CBR/VBR, keyframe interval, profile and B-frames.
 - SRT latency down to 0 ms, stream IDs and passphrases; automatic reconnects; live bitrate, FPS, RTT and dropped-frame statistics; keeps streaming in the background.
