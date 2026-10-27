@@ -21,6 +21,7 @@ public static class MauiProgram
         {
             handlers.AddHandler<Controls.ScenePreview, Platforms.Android.Studio.ScenePreviewHandler>();
             handlers.AddHandler<Controls.SceneInteractionView, Platforms.Android.SceneInteractionHandler>();
+            handlers.AddHandler<Controls.SourceReorderHandle, Platforms.Android.SceneInteractionHandler>();
         });
         StudioHost.Engine = Platforms.Android.Studio.AndroidStudioEngine.Instance;
 #endif

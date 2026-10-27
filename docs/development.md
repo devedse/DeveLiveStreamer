@@ -96,9 +96,9 @@ Images are copied into the app's private `images/` directory. JSON export includ
 
 ## Validation
 
-`build.ps1` (also called by `eng/build-android.sh`) runs both test projects before packaging (65 regular tests plus an opt-in server test; 66 cases reported by the test runner):
+`build.ps1` (also called by `eng/build-android.sh`) runs both test projects before packaging (71 regular tests plus an opt-in server test; 72 cases reported by the test runner):
 
-- **Core (39):** scene references, layer order, history, storage recovery, uncapped output settings, codec-imposed constraints (even 4:2:0 sizes, AAC sample rates), active-scene capture consent (including hidden/transparent sources, device audio, denial, revocation and reactivation), redraw requests made during rendering, explicit selection/move/resize gestures, undoable fit/stretch/center/mirror actions, and the layer geometry used by the compositor: center-crop, letterbox, mirroring, all four display rotations and the GL matrix layout.
+- **Core (45):** scene references, drag ordering from either end or the middle of the source list, persisted drawing order, one-step undo/redo, unchanged geometry and other scenes, stale drops and no-op history, storage recovery, uncapped output settings, codec-imposed constraints (even 4:2:0 sizes, AAC sample rates), active-scene capture consent (including hidden/transparent sources, device audio, denial, revocation and reactivation), redraw requests made during rendering, explicit selection/move/resize gestures, undoable fit/stretch/center/mirror actions, and the layer geometry used by the compositor: center-crop, letterbox, mirroring, all four display rotations and the GL matrix layout.
 - **Streaming (27):** NAL/AVC/HEVC/AAC/AMF0 round trips, MPEG-TS and FLV round trips, DeveStreamingPlatform URL parsing (OME `streamid` routes, encoded IDs, IPv6, passphrases), the mixer, publisher reconnection/key-frame/video-only behavior, and interoperability with FFmpeg 7.1 over loopback:
   - our MPEG-TS (H.264 and HEVC) decodes in FFmpeg without errors;
   - our SRT publisher delivers every frame to an FFmpeg SRT listener, for H.264 and HEVC;

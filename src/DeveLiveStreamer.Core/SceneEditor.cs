@@ -100,6 +100,18 @@ public sealed class SceneEditor
         var item = list[index]; list.RemoveAt(index); list.Insert(target, item);
     });
 
+    // The source list shows the front layer first; the renderer stores it last.
+    public void ReorderItem(string sceneId, string itemId, int indexFromTop) => Edit(p =>
+    {
+        if (p.SelectedSceneId != sceneId) return;
+        var list = p.SelectedScene.Items;
+        var index = list.FindIndex(i => i.Id == itemId);
+        if (index < 0) return;
+        var target = list.Count - 1 - Math.Clamp(indexFromTop, 0, list.Count - 1);
+        var item = list[index]; list.RemoveAt(index); list.Insert(target, item);
+        SelectedItemId = itemId;
+    });
+
     public void FitSelected() => Edit(_ =>
     {
         if (SelectedItem is not { Locked: false } item) return;

@@ -9,6 +9,11 @@ public sealed class EditorPage : ContentPage
     private readonly EditorSession session;
     private readonly SceneCanvas canvas = new();
     private readonly VerticalStackLayout sources = new() { Spacing = 3 };
+    private readonly List<(string ItemId, Grid Row)> sourceRows = [];
+    private readonly BoxView sourceDropLine = new() { Color = Theme.Accent, HeightRequest = 2, InputTransparent = true, ZIndex = 20 };
+    private SourceDrag? sourceDrag;
+    private Microsoft.Maui.Dispatching.IDispatcherTimer? sourceScrollTimer;
+    private bool sourceScrollPending;
     private readonly Button sceneTitle;
     private readonly Label outputInfo = Theme.Label("1920 × 1080 · 30 fps", 11, Theme.Muted);
     private readonly Label saved = Theme.Label("Saved on this device", 10, Theme.Muted);
@@ -98,6 +103,7 @@ public sealed class EditorPage : ContentPage
         var sourceHeading = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(GridLength.Star), new(GridLength.Auto) } };
         sourceHeading.Add(sourceCount, 0); sourceHeading.Add(Theme.Button("+ Add source", () => Run(AddSource)), 1);
         sourcePanel.Children.Add(sourceHeading); sourcePanel.Children.Add(sources);
+        sourcePanel.Children.Add(Theme.Label("Drag the grips to reorder · top source appears on top", 10, Theme.Muted));
         pageContent.Children.Add(Theme.Card(sourcePanel));
 
         allowCamera = Theme.Button("Allow camera access", () => Run(AllowCamera));
@@ -112,6 +118,12 @@ public sealed class EditorPage : ContentPage
         footer.Add(goLive, 1);
         var root = new Grid { RowDefinitions = new RowDefinitionCollection { new(62), new(GridLength.Star), new(60) } };
         editorScroll = new ScrollView { Content = pageContent };
+        editorScroll.Scrolled += (_, args) =>
+        {
+            if (sourceDrag is not { } drag) return;
+            drag.FingerY += args.ScrollY - drag.ScrollY; drag.ScrollY = args.ScrollY;
+            UpdateSourceDropFeedback();
+        };
         root.Add(header, 0, 0); root.Add(editorScroll, 0, 1); root.Add(footer, 0, 2); Content = root;
         canvas.SelectionChanged += (_, _) => RenderSources();
         session.Changed += (_, _) => MainThread.BeginInvokeOnMainThread(Render);
@@ -130,6 +142,11 @@ public sealed class EditorPage : ContentPage
             if (session.RecoveryMessage is { } message) await DisplayAlertAsync("Collection recovered", message, "OK");
         }
         catch (Exception ex) { await DisplayAlertAsync("Could not open collection", ex.Message, "OK"); }
+    }
+    protected override void OnDisappearing()
+    {
+        FinishSourceReorder(cancel: true);
+        base.OnDisappearing();
     }
     private void UpdateCanvasAspect()
     {
@@ -237,27 +254,42 @@ public sealed class EditorPage : ContentPage
     private void RenderSources()
     {
         canvas.SyncSelection();
-        var editor = session.Editor; sources.Children.Clear();
+        var editor = session.Editor;
+        if (sourceDrag is { } drag)
+        {
+            if (drag.SceneId != editor.Project.SelectedSceneId || !sourceRows.Select(r => r.ItemId)
+                .SequenceEqual(editor.Project.SelectedScene.Items.AsEnumerable().Reverse().Select(i => i.Id)))
+            { FinishSourceReorder(cancel: true); return; }
+            RenderSelectionActions(); return;
+        }
+        sources.Children.Clear(); sourceRows.Clear();
         sourceCount.Text = $"SOURCES  /  {editor.Project.SelectedScene.Items.Count:00}";
         foreach (var item in editor.Project.SelectedScene.Items.AsEnumerable().Reverse())
         {
             var source = editor.Project.SourceFor(item); var selected = item.Id == editor.SelectedItemId;
-            var row = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(30), new(GridLength.Star), new(40), new(40) },
-                Padding = new Thickness(8, 0, 0, 0), HeightRequest = 46, BackgroundColor = selected ? Theme.Raised : Colors.Transparent };
-            row.Add(new Image { Source = $"ic_{KindIcon(source.Kind)}.png", HeightRequest = 17, WidthRequest = 17 }, 0);
+            var row = new Grid { RowDefinitions = new RowDefinitionCollection { new(GridLength.Auto) }, ColumnDefinitions = new ColumnDefinitionCollection { new(44), new(26), new(GridLength.Star), new(44), new(44) },
+                HeightRequest = 48, BackgroundColor = selected ? Theme.Raised : Colors.Transparent };
+            var handle = new SourceReorderHandle(source.Name) { IsEnabled = editor.Project.SelectedScene.Items.Count > 1 };
+            handle.Opacity = handle.IsEnabled ? 1 : .35;
+            handle.StartInteraction += (_, args) => BeginSourceReorder(item.Id, row, handle, args);
+            handle.DragInteraction += (_, args) => DragSourceReorder(handle, args);
+            handle.EndInteraction += (_, args) => { DragSourceReorder(handle, args); FinishSourceReorder(cancel: false); };
+            handle.CancelInteraction += (_, _) => FinishSourceReorder(cancel: true);
+            row.Add(handle, 0);
+            row.Add(new Image { Source = $"ic_{KindIcon(source.Kind)}.png", HeightRequest = 17, WidthRequest = 17, InputTransparent = true }, 1);
             var name = Theme.Label(source.Name, 12, item.Visible ? Theme.Text : Theme.Muted);
             var detail = item.Visible ? engine.SourceStatus(source.Id) : null;
-            if (detail is null) row.Add(name, 1);
+            if (detail is null) row.Add(name, 2);
             else
             {
                 row.HeightRequest = 58;
                 var stack = new VerticalStackLayout { Spacing = 0, VerticalOptions = LayoutOptions.Center };
                 stack.Children.Add(name);
                 stack.Children.Add(new Label { Text = detail, FontSize = 10, TextColor = Theme.Accent, LineBreakMode = LineBreakMode.TailTruncation, MaxLines = 1 });
-                row.Add(stack, 1);
+                row.Add(stack, 2);
             }
-            row.Add(Theme.Icon(item.Visible ? "eye" : "hidden", "Toggle source visibility", () => editor.Edit(_ => item.Visible = !item.Visible)), 2);
-            row.Add(Theme.Icon(item.Locked ? "lock" : "unlock", "Toggle source lock", () => editor.Edit(_ => item.Locked = !item.Locked)), 3);
+            row.Add(Theme.Icon(item.Visible ? "eye" : "hidden", "Toggle source visibility", () => editor.Edit(_ => item.Visible = !item.Visible)), 3);
+            row.Add(Theme.Icon(item.Locked ? "lock" : "unlock", "Toggle source lock", () => editor.Edit(_ => item.Locked = !item.Locked)), 4);
             SemanticProperties.SetDescription(row, $"Source {source.Name}{(selected ? ", selected" : "")}");
             var tap = new TapGestureRecognizer(); tap.Tapped += (_, _) =>
             {
@@ -265,11 +297,99 @@ public sealed class EditorPage : ContentPage
                 Run(() => editorScroll.ScrollToAsync(sourceActionBar, ScrollToPosition.MakeVisible, true));
             };
             row.GestureRecognizers.Add(tap);
-            sources.Children.Add(row);
+            sources.Children.Add(row); sourceRows.Add((item.Id, row));
         }
         if (editor.Project.SelectedScene.Items.Count == 0)
             sources.Children.Add(Theme.Label("An empty canvas. Add your first source.", 12, Theme.Muted));
         RenderSelectionActions();
+    }
+
+    private void BeginSourceReorder(string itemId, Grid row, SourceReorderHandle handle, TouchEventArgs args)
+    {
+        if (args.Touches.Length == 0 || sourceRows.Count < 2) return;
+        FinishSourceReorder(cancel: true);
+        canvas.CancelGesture();
+        var grabY = handle.Y + args.Touches[0].Y;
+        sourceDrag = new SourceDrag(session.Editor.Project.SelectedSceneId, itemId, row, grabY, row.Y + grabY, editorScroll.ScrollY);
+        RaiseDraggedSource(row, true); row.BackgroundColor = Theme.AccentDark; row.Opacity = .85;
+        canvas.SelectItem(itemId);
+        sourceScrollTimer ??= Dispatcher.CreateTimer();
+        sourceScrollTimer.Interval = TimeSpan.FromMilliseconds(50);
+        sourceScrollTimer.Tick -= AutoScrollSources;
+        sourceScrollTimer.Tick += AutoScrollSources;
+        sourceScrollTimer.Start();
+    }
+
+    private void DragSourceReorder(SourceReorderHandle handle, TouchEventArgs args)
+    {
+        if (sourceDrag is not { } drag || args.Touches.Length == 0) return;
+        drag.FingerY = drag.Row.Y + drag.Row.TranslationY + handle.Y + args.Touches[0].Y;
+        drag.ScrollY = editorScroll.ScrollY;
+        drag.Moved |= Math.Abs(drag.FingerY - drag.StartY) > 4;
+        UpdateSourceDropFeedback();
+    }
+
+    private void UpdateSourceDropFeedback()
+    {
+        if (sourceDrag is not { Moved: true } drag) return;
+        drag.Row.TranslationY = drag.FingerY - drag.Row.Y - drag.GrabY;
+        var remaining = sourceRows.Where(r => r.ItemId != drag.ItemId).ToArray();
+        drag.TargetIndex = remaining.Count(r => drag.FingerY > r.Row.Y + r.Row.Height / 2);
+        if (sourceDropLine.Parent is Grid previous) previous.Children.Remove(sourceDropLine);
+        if (drag.TargetIndex == sourceRows.FindIndex(r => r.ItemId == drag.ItemId)) return;
+        var atEnd = drag.TargetIndex == remaining.Length;
+        var targetRow = atEnd ? remaining[^1].Row : remaining[drag.TargetIndex].Row;
+        sourceDropLine.VerticalOptions = atEnd ? LayoutOptions.End : LayoutOptions.Start;
+        targetRow.Add(sourceDropLine); Grid.SetColumnSpan(sourceDropLine, 5);
+    }
+
+    private async void AutoScrollSources(object? sender, EventArgs args)
+    {
+        if (sourceScrollPending || sourceDrag is not { Moved: true } drag) return;
+        double listTop = 0;
+        for (Element? element = sources; element is View view && element != editorScroll.Content; element = element.Parent)
+            listTop += view.Y;
+        var fingerY = listTop + drag.FingerY - editorScroll.ScrollY;
+        var step = fingerY < 48 ? -12 : fingerY > editorScroll.Height - 48 ? 12 : 0;
+        if (step == 0) return;
+        var target = Math.Clamp(editorScroll.ScrollY + step, 0, Math.Max(0, editorScroll.ContentSize.Height - editorScroll.Height));
+        if (Math.Abs(target - editorScroll.ScrollY) < .5) return;
+        sourceScrollPending = true;
+        try { await editorScroll.ScrollToAsync(0, target, false); }
+        finally { sourceScrollPending = false; }
+    }
+
+    private void FinishSourceReorder(bool cancel)
+    {
+        if (sourceDrag is not { } drag) return;
+        sourceDrag = null; sourceScrollTimer?.Stop();
+        if (sourceDropLine.Parent is Grid previous) previous.Children.Remove(sourceDropLine);
+        drag.Row.TranslationY = 0; RaiseDraggedSource(drag.Row, false); drag.Row.Opacity = 1;
+        if (!cancel && drag.Moved) session.Editor.ReorderItem(drag.SceneId, drag.ItemId, drag.TargetIndex);
+        RenderSources(); canvas.Refresh();
+    }
+
+    private static void RaiseDraggedSource(Grid row, bool raised)
+    {
+#if ANDROID
+        // Changing MAUI ZIndex removes/re-adds the native row, cancelling its active touch.
+        if (row.Handler?.PlatformView is global::Android.Views.View native) native.TranslationZ = raised ? 8 : 0;
+#else
+        row.ZIndex = raised ? 10 : 0;
+#endif
+    }
+
+    private sealed class SourceDrag(string sceneId, string itemId, Grid row, double grabY, double fingerY, double scrollY)
+    {
+        public string SceneId { get; } = sceneId;
+        public string ItemId { get; } = itemId;
+        public Grid Row { get; } = row;
+        public double GrabY { get; } = grabY;
+        public double StartY { get; } = fingerY;
+        public double FingerY { get; set; } = fingerY;
+        public double ScrollY { get; set; } = scrollY;
+        public bool Moved { get; set; }
+        public int TargetIndex { get; set; }
     }
 
     private void ToggleInteraction(SourceInteractionMode mode)
